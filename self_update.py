@@ -38,6 +38,7 @@ class SafeRedirect(urllib.request.HTTPRedirectHandler):
 
 class GitHub:
     def __init__(self,token):
+        if not isinstance(token,str) or not token or re.search(r'[\s\x00-\x1f\x7f]',token):raise ValueError('Token GitHub tidak valid; periksa login atau variabel lingkungan.')
         self.token=token;self.opener=urllib.request.build_opener(SafeRedirect())
     def read(self,path,limit,asset=False):
         # Only a fixed GitHub API endpoint receives the credential.

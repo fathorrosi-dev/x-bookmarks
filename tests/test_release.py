@@ -76,6 +76,10 @@ class Releases(unittest.TestCase):
             self.assertEqual(update.github_token(),'first');run.assert_not_called()
         with patch.dict(os.environ,{},clear=True),patch.object(update.shutil,'which',return_value=None):
             with self.assertRaisesRegex(ValueError,'login'):update.github_token()
+    def test_invalid_token_is_rejected_without_exposing_credential(self):
+        for token in ('secret\ncredential','secret credential','secret\x00credential'):
+            with self.assertRaises(ValueError) as result:update.GitHub(token)
+            self.assertNotIn('secret',str(result.exception));self.assertNotIn('credential',str(result.exception))
     def test_unsafe_zip_private_files_symlink_and_duplicate_names(self):
         for i,name in enumerate(('x-bookmarks/../escape','/x-bookmarks/app.py','x-bookmarks/settings.json','x-bookmarks/.state/private','x-bookmarks/tests/../../escape','x-bookmarks/a\\b.py','x-bookmarks/.venv/private')):
             archive=self.root/'bad.zip'
