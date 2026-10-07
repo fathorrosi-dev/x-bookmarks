@@ -42,7 +42,12 @@ def is_partial(path):
 
 def digest(path):
     with path.open('rb') as stream:
-        return hashlib.file_digest(stream, 'sha256').digest()
+        if callable(getattr(hashlib, 'file_digest', None)):
+            return hashlib.file_digest(stream, 'sha256').digest()
+        value = hashlib.sha256()
+        for block in iter(lambda: stream.read(1048576), b''):
+            value.update(block)
+        return value.digest()
 
 
 def organize(media, state):

@@ -110,6 +110,14 @@ class Tests(unittest.TestCase):
         self.assertEqual((Path(result['backup'])/'z.jpg').read_bytes(),b'z')
         self.assertFalse((self.media/'z.jpg').exists())
 
+    def test_duplicate_hash_fallback_matches_sha256_without_file_digest(self):
+        import hashlib
+        from media_layout import digest
+        path=self.media/'large.mp4';value=b'fixture bytes'*(1048576//6)
+        path.write_bytes(value)
+        with patch.object(hashlib,'file_digest',None,create=True):
+            self.assertEqual(digest(path),hashlib.sha256(value).digest())
+
     def test_unknown_preserved_and_warned(self):
         code,events=self.run_worker('unknown')
         self.assertEqual(code,0)
