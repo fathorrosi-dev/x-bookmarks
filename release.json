@@ -1,0 +1,40 @@
+{
+  "version": "3.1.0",
+  "repository": "fathorrosi-dev/x-bookmarks",
+  "platforms": [
+    "linux-x86_64"
+  ],
+  "python_min": "3.10",
+  "python_max": "3.14",
+  "files": [
+    ".bootstrap/SHA256SUMS",
+    ".bootstrap/pip-26.2.1-py3-none-any.whl",
+    ".github/workflows/release.yml",
+    ".gitignore",
+    "INSTALL-STATUS.md",
+    "MIGRASI.md",
+    "PANDUAN.md",
+    "README.md",
+    "TEST-REPORT.md",
+    "bookmarks.py",
+    "cli_ui.py",
+    "gallery-dl.json",
+    "gallery_worker.py",
+    "media_layout.py",
+    "migrate.sh",
+    "release.json",
+    "release_bundle.py",
+    "release_tools.py",
+    "requirements.txt",
+    "rollback.sh",
+    "self_update.py",
+    "settings.example.json",
+    "setup.sh",
+    "tests/demo.py",
+    "tests/test_release.py",
+    "tests/test_tools.py",
+    "tests/worker_fixture.py",
+    "update.sh",
+    "x-bookmarks"
+  ]
+}

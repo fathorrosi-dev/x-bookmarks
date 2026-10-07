@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+SOURCE="${BASH_SOURCE[0]}"
+while [[ -L "$SOURCE" ]]; do
+  LINK_BASE=$(CDPATH= cd -- "$(dirname -- "$SOURCE")" && pwd)
+  SOURCE=$(readlink -- "$SOURCE")
+  if [[ "$SOURCE" != /* ]]; then SOURCE="$LINK_BASE/$SOURCE"; fi
+done
+BASE=$(CDPATH= cd -- "$(dirname -- "$SOURCE")" && pwd)
+PY="$BASE/.venv/bin/python"
+if [[ ! -x "$PY" ]]; then
+  printf '%s\n' 'Lingkungan Python belum tersedia. Jalankan bash setup.sh dari folder alat.' >&2
+  exit 1
+fi
+export PYTHONDONTWRITEBYTECODE=1
+exec "$PY" "$BASE/bookmarks.py" "$@"

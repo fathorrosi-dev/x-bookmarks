@@ -1,0 +1,51 @@
+{
+  "extractor": {
+    "sleep-request": "2.0-4.0",
+    "sleep": "1.0-2.0",
+    "retries": 4,
+    "timeout": 30,
+    "twitter": {
+      "size": [
+        "orig",
+        "4096x4096",
+        "large"
+      ],
+      "videos": true,
+      "previews": false,
+      "text-tweets": true,
+      "expand": false,
+      "quoted": false,
+      "retweets": false,
+      "replies": true,
+      "ads": false,
+      "cards": false,
+      "articles": false,
+      "ratelimit": "wait",
+      "locked": "abort",
+      "filename": "{date:%Y-%m-%d}_{author[name]}_{conversation_id}_{tweet_id}_{num}.{extension}",
+      "archive-prefix": "twitter_",
+      "archive-format": "{tweet_id}_{num}",
+      "archive-event": [
+        "file",
+        "skip"
+      ],
+      "postprocessors": [],
+      "directory": {
+        "str(locals().get('extension', '')).lower() in ('jpg','jpeg','png','webp','gif','avif')": [
+          "photo"
+        ],
+        "str(locals().get('extension', '')).lower() in ('mp4','webm','mov','m4v','mkv','ts')": [
+          "video"
+        ],
+        "": []
+      }
+    }
+  },
+  "output": {
+    "mode": "null",
+    "colors": false
+  },
+  "downloader": {
+    "progress": 0
+  }
+}

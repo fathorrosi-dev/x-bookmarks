@@ -1,0 +1,15 @@
+archive/
+.state/
+.venv/
+media/
+settings.json
+cookies*
+*.sqlite*
+*.log
+*.part
+__pycache__/
+*.pyc
+*.zip
+*.zip.sha256
+dist/
+.DS_Store

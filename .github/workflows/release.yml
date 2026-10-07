@@ -1,0 +1,56 @@
+name: Ubuntu release verification
+on:
+  push:
+    paths-ignore: ["**.md", "**.svg"]
+  pull_request:
+  workflow_dispatch:
+concurrency:
+  group: verify-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  verify:
+    name: Ubuntu 24.04 Python ${{ matrix.python }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.10', '3.13', '3.14']
+    env:
+      PYTHONUTF8: '1'
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Clean setup and verification
+        run: bash setup.sh && bash setup.sh --check
+      - name: Local HTTP, gallery-dl and release lifecycle tests
+        run: .venv/bin/python -m unittest discover -s tests -v
+      - name: Release package validation
+        run: python release_bundle.py dist
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: verify
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.13'
+      - name: Verify tag and build
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          python -c "import os,json;from release_tools import installed_version;from pathlib import Path;assert os.environ['RELEASE_TAG']=='v'+installed_version(Path('.'));assert json.load(open('release.json'))['version']==installed_version(Path('.'))"
+          python release_bundle.py dist
+      - name: Publish verified package
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/*.zip dist/*.sha256 --verify-tag --title "X Bookmarks $GITHUB_REF_NAME" --notes "Stable release: all Ubuntu/Python verification jobs passed. Program-only package; user data excluded."
