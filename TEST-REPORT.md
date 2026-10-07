@@ -16,3 +16,11 @@ CI: **Ubuntu 24.04 x64, Python 3.10, 3.13, dan 3.14 lulus**. [Hasil CI](https://
 Rilis stabil dipublikasikan oleh workflow tag hanya setelah ketiga pekerjaan CI lulus kembali. Pengujian memakai terminal interaktif; pemeriksaan langsung melalui Warp belum dilakukan. Windows/macOS berada di luar dukungan rilis ini.
 
 Pemasangan dan pemeriksaan perangkat pengguna dicatat terpisah dalam INSTALL-STATUS.md. Laporan ini tidak mengklaim melakukan download X nyata dalam pengujian rilis.
+
+## Verifikasi rilis dan home
+
+[CI tag v3.1.0](https://github.com/fathorrosi-dev/x-bookmarks/actions/runs/37636081902) lulus pada ketiga versi Python dan berhasil mempublikasikan ZIP serta SHA-256. Rilis bukan draft/prerelease.
+
+Upgrader mengambil paket GitHub nyata, memverifikasinya, dan memasang 3.1.0 ke home dari 3.0.2. Backup dan journal transaksi dikonfirmasi; dependensi tetap sama. Inventaris di bawah kunci sebelum/sesudah pemasangan cocok: 26 catatan/settings serta 564 media.
+
+Pemeriksaan rilis home lulus melalui CLI plain, CLI interaktif, dan jalur Python standar. Preview home memverifikasi ketiga warna, blok padat, pembaruan di tempat, serta kursor kembali tampil. Tes update ke versi sintetis yang lebih baru dan rollback tetap memakai salinan terisolasi, tidak memakai data utama atau menerbitkan rilis simulasi.
