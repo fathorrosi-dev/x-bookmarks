@@ -13,3 +13,4 @@ __pycache__/
 *.zip.sha256
 dist/
 .DS_Store
+CATATAN-PERANGKAT.md

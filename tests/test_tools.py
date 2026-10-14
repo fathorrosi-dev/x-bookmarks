@@ -45,7 +45,7 @@ class Tests(unittest.TestCase):
                           'runpy.run_path(' + repr(str(BASE / 'tests/worker_fixture.py')) + ',run_name="__main__")\n')
 
     def command(self, mode='mix', *extra):
-        return [sys.executable, '-m', 'gallery_dl', '--config-ignore', '-c', str(BASE/'gallery-dl.json'),
+        return ['--config-ignore', '-c', str(BASE/'gallery-dl.json'),
                 '-o', 'base-directory=' + json.dumps(str(self.media)),
                 '-o', 'sleep=0', '-o', 'sleep-request=0', '-o', 'cookies=null',
                 '--download-archive', str(self.state/'downloaded.sqlite3'),
@@ -241,18 +241,28 @@ class Tests(unittest.TestCase):
         self.assertEqual([span.style for span in bar.spans],
                          [cli_ui.PINK, f'{cli_ui.PINK} on {cli_ui.EMPTY}', cli_ui.EMPTY])
 
-    def test_unknown_bar_ping_pong_and_pause(self):
-        for width in (1, 2, 3, 20):
-            positions = []
-            travel = max(0, width-3)
-            for step in range(2*travel+1):
-                bar = cli_ui.SolidBar(0, None, cli_ui.RED, step/8, True).text(width)
+    def test_unknown_bar_comet_and_pause(self):
+        speed = cli_ui.COMET_SPEED
+        for width in (1, 2, 3, 4, 5, 20):
+            heads = []
+            for step in range(2*(width-1)+1):
+                bar = cli_ui.SolidBar(0, None, cli_ui.RED, (step+.5)/speed, True).text(width)
                 self.assertEqual(bar.cell_len, width)
-                self.assertEqual(bar.plain.count('█'), min(3, width))
-                positions.append(bar.plain.index('█'))
-            self.assertEqual(positions[0], 0)
-            self.assertEqual(positions[travel], travel)
-            self.assertEqual(positions[-1], 0)
+                self.assertEqual(bar.plain.count('█'), 1)
+                heads.append(bar.plain.index('█'))
+            self.assertEqual((heads[0], heads[width-1], heads[-1]), (0, width-1, 0))
+            # The head never jumps: one cell per step, also when it bounces off an end.
+            self.assertTrue(all(abs(a-b) <= 1 for a, b in zip(heads, heads[1:])), heads)
+        # The tail trails behind the head, flipping sides when the direction changes.
+        right = cli_ui.SolidBar(0, None, cli_ui.RED, 5.5/speed, True).text(20).plain
+        left = cli_ui.SolidBar(0, None, cli_ui.RED, 25.5/speed, True).text(20).plain
+        self.assertEqual(right[2:6], '░▒▓█')
+        self.assertEqual(left[13:17], '█▓▒░')
+        # No head without data or when motion is off; ASCII bars have their own symbols.
+        self.assertEqual(cli_ui.SolidBar(0, None, cli_ui.RED, 3, False).text(20).plain, '░'*20)
+        self.assertEqual(cli_ui.SolidBar(0, None, cli_ui.RED, 3, True, motion=False).text(20).plain, '░'*20)
+        self.assertEqual(cli_ui.SolidBar(50, 100, cli_ui.RED, unicode_ok=False).text(10).plain, '#'*5+'.'*5)
+        self.assertTrue(cli_ui.SolidBar(0, None, cli_ui.RED, 3.2, True, unicode_ok=False).text(10).plain.isascii())
         clock_time = [0.0]
         with patch.object(cli_ui.time, 'monotonic', side_effect=lambda:clock_time[0]):
             ui = cli_ui.UI(plain=True)
@@ -284,38 +294,44 @@ class Tests(unittest.TestCase):
             self.assertIsNone(session.animation.resumed_at)
 
     def test_responsive_solid_panel_widths(self):
+        from rich.cells import cell_len
         from rich.console import Console
-        ui = cli_ui.UI(plain=True)
-        session = ui.downloading(120, self.media, self.state/'log')
-        ui.session = session
-        ui.event({'type':'start','path':'long_name_'*30+'.mp4','author':'long_author_'*20})
-        session.overall.update(session.overall_id, completed=72)
-        for total in (24*1024**2, None):
-            ui.event({'type':'progress','total':total,'downloaded':18*1024**2,'speed':1024**2})
-            for width in (40, 60, 100, 160):
-                with self.subTest(width=width, total=total):
-                    out = io.StringIO()
-                    Console(file=out,width=width,no_color=True).print(session)
-                    lines = out.getvalue().splitlines()
-                    self.assertEqual(len(lines), 7)
-                    self.assertTrue(all(len(line)<=width for line in lines))
-                    self.assertIn('60% · 72/120', lines[0])
-                    self.assertIn('░', lines[0])
-                    self.assertIn('█', lines[1])
-                    if total:
-                        self.assertIn('75%', lines[1])
-                        self.assertIn('18.0 MB/24.0 MB', lines[3] if width<60 else lines[1])
-                        self.assertNotIn('18.0 MB/24.0 MB', lines[1] if width<60 else lines[3])
-                    elif width<60:
-                        self.assertIn('—%', lines[1])
-                    self.assertNotIn('\x1b', out.getvalue())
+        with patch.dict(os.environ, {'TERM': 'xterm-256color'}):
+            ui = cli_ui.UI(plain=True)
+            session = ui.downloading(120, self.media, self.state/'log')
+            ui.session = session
+            ui.event({'type':'start','path':'long_name_'*30+'.mp4','author':'long_author_'*20})
+            session.overall.update(session.overall_id, completed=72)
+            for total in (24*1024**2, None):
+                ui.event({'type':'progress','total':total,'downloaded':18*1024**2,'speed':1024**2})
+                for width in (40, 60, 100, 160):
+                    with self.subTest(width=width, total=total):
+                        out = io.StringIO()
+                        Console(file=out,width=width,no_color=True).print(session)
+                        lines = out.getvalue().splitlines()
+                        # Frame, two bars, blank, file, speed, rule, counts, status, frame.
+                        self.assertEqual(len(lines), 10)
+                        self.assertEqual({cell_len(line) for line in lines}, {width})
+                        self.assertIn('60%  72/120', lines[1])
+                        self.assertIn('░', lines[1])
+                        self.assertIn('█', lines[2])
+                        bars = [sum(ch in '█░▏▎▍▌▋▊▉▒▓' for ch in line) for line in lines[1:3]]
+                        self.assertEqual(bars[0], bars[1], 'Utas and File bars have the same length')
+                        if total:
+                            self.assertIn('75%', lines[2])
+                            self.assertIn('18.0 MB/24.0 MB', lines[5] if width<60 else lines[2])
+                            self.assertNotIn('18.0 MB/24.0 MB', lines[2] if width<60 else lines[5])
+                        elif width<60:
+                            self.assertIn('—%', lines[2])
+                        self.assertNotIn('\x1b', out.getvalue())
 
-    def terminal_demo(self, no_color=False, interrupt=False, command=None, expected_exit=None):
+    def terminal_demo(self, no_color=False, interrupt=False, command=None, expected_exit=None, env_extra=None):
         master, slave = pty.openpty()
         env = {**os.environ, 'TERM': 'xterm-256color'}
         env.pop('NO_COLOR', None)
         if no_color:
             env['NO_COLOR'] = '1'
+        env.update(env_extra or {})
         child = subprocess.Popen(command or [sys.executable, str(BASE/'tests/demo.py')],
                                  stdout=slave, stderr=slave, env=env)
         os.close(slave)
@@ -354,7 +370,14 @@ class Tests(unittest.TestCase):
             self.assertNotIn(old, output)
         self.assertIn('\x1b[1A', output)
         self.assertIn('\x1b[?25h', output)
-        self.assertIn('Foto 1 · Video 1', output)
+        self.assertIn('1 foto', output)
+        self.assertIn('1 video', output)
+        self.assertIn('\x1b[38;2;142;227;176m', output)       # mint: finished panel and summary
+        self.assertIn('\x1b]0;x-bookmarks', output)           # terminal title carries progress
+        self.assertIn('\x1b[22;0t', output)                   # title pushed ...
+        self.assertIn('\x1b[23;0t', output)                   # ... and restored
+        self.assertTrue(any(frame in output for frame in cli_ui.GLYPHS[True]['spin']))
+        self.assertTrue('▒' in output or '▓' in output)       # comet tail while the size is unknown
         self.assertIn('█', output)
         self.assertIn('░', output)
         self.assertIn('\x1b[38;2;51;65;85m', output)
@@ -423,5 +446,235 @@ class Tests(unittest.TestCase):
             self.assertNotIn('░', result.stderr)
             self.assertLess(len(result.stderr.splitlines()), 20)
             self.assertIn('Foto 1 · Video 1', result.stderr)
+
+    def test_static_env_removes_motion_and_title_env_removes_title(self):
+        output = self.terminal_demo(env_extra={'X_BOOKMARKS_STATIC': '1', 'X_BOOKMARKS_NO_TITLE': '1'})
+        for frame in cli_ui.GLYPHS[True]['spin']:
+            self.assertNotIn(frame, output)
+        self.assertNotIn('▒', output)
+        self.assertNotIn('▓', output)
+        self.assertNotIn('\x1b]0;', output)
+        self.assertNotIn('\x1b[22;0t', output)
+        self.assertIn('\x1b[1A', output)
+        self.assertIn('Selesai', output)
+
+    def interactive_ui(self, width=80):
+        """A UI that takes the terminal code path but writes into a string."""
+        from rich.console import Console
+        with patch.dict(os.environ, {'TERM': 'xterm-256color'}):
+            ui = cli_ui.UI(plain=True)
+        ui.interactive = True
+        ui.console = Console(file=io.StringIO(), width=width, force_terminal=True, color_system=None, highlight=False)
+        return ui, ui.console.file
+
+    def test_symbols_are_one_cell_and_text_fallback_stays_aligned(self):
+        from rich.cells import cell_len
+        from rich.console import Console
+        for table in (*cli_ui.GLYPHS[True].values(), *cli_ui.BARS[True].values()):
+            for char in table:
+                self.assertEqual(cell_len(char), 1, char)
+        for table in (*cli_ui.GLYPHS[False].values(), *cli_ui.BARS[False].values()):
+            self.assertTrue(table.isascii(), table)
+
+        def render(console):
+            ui = cli_ui.UI(plain=True)
+            ui.console = console
+            ui.range = cli_ui.range_label('2026-08-31', '2026-10-06', 'Asia/Jakarta', ui.g['arrow'])
+            session = ui.downloading(120, self.media, self.state/'log')
+            ui.session = session
+            session.failures = [('1000', 1)]
+            session.photos, session.failed = 3, 1
+            ui.event({'type': 'start', 'path': 'a.mp4', 'author': 'x'})
+            ui.event({'type': 'progress', 'total': None, 'downloaded': 10, 'speed': 10})
+            console.print(session)
+            console.print(session.summary('warn', False))
+        # TERM=linux: the frame, symbols, bars and rule are ASCII. Only the text separator stays.
+        out = io.StringIO()
+        with patch.dict(os.environ, {'TERM': 'linux'}):
+            render(Console(file=out, width=60, highlight=False))
+        self.assertLessEqual({ch for ch in out.getvalue() if ord(ch) > 127}, {'·'})
+        # A console that cannot encode the frame (ASCII locale) picks the ASCII frame itself.
+        raw = io.BytesIO()
+        stream = io.TextIOWrapper(raw, encoding='ascii', errors='replace')
+        with patch.dict(os.environ, {'TERM': 'xterm-256color'}):
+            render(Console(file=stream, width=60, highlight=False))
+        stream.flush()
+        lines = raw.getvalue().decode('ascii').splitlines()
+        self.assertTrue(all(len(line) == 60 for line in lines), lines)
+        self.assertTrue(lines[0].startswith('+-') and lines[0].endswith('-+'))
+
+    def test_gradient_range_label_and_short_path(self):
+        bar = cli_ui.SolidBar(100, 100, cli_ui.PINK, gradient=(cli_ui.PINK, cli_ui.BLUE)).text(20)
+        styles = [span.style for span in bar.spans]
+        self.assertEqual((len(styles), styles[0], styles[-1]), (20, cli_ui.PINK, cli_ui.BLUE))
+        self.assertEqual(cli_ui.blend('#000000', '#FFFFFF', .5), '#808080')
+        self.assertEqual(cli_ui.range_label('2026-08-31', '2026-10-06', 'Asia/Jakarta'), '31 Agu → 06 Okt 2026 · WIB')
+        self.assertEqual(cli_ui.range_label('2025-12-30', '2026-01-02', 'Asia/Jakarta', '>'), '30 Des 2025 > 02 Jan 2026 · WIB')
+        self.assertEqual(cli_ui.range_label('besok', '2026-10-06', 'UTC'), 'besok–2026-10-06 · UTC')
+        self.assertEqual(cli_ui.short_path(Path.home()/'tools/media'), '~/tools/media')
+        self.assertEqual(cli_ui.short_path('/opt/media'), '/opt/media')
+        self.assertEqual([cli_ui.elapsed_label(v) for v in (.24, 3.21, 75)], ['240 ms', '3.2d', '1m 15d'])
+
+    def test_receipts_always_for_problems_and_for_successes_only_in_small_runs(self):
+        def run(total, failing):
+            ui, out = self.interactive_ui()
+            session = ui.downloading(total, self.media, self.state/'log')
+            ui.session = session
+            for index in range(total):
+                session.thread_start(str(1000+index))
+                ui.event({'type': 'start', 'path': f'{index}.jpg'})
+                ui.event({'type': 'success', 'path': f'{index}.jpg'})
+                session.thread_end(1 if index in failing else 0)
+            return out.getvalue()
+        small = run(3, {1})
+        self.assertEqual(small.count('utas 100'), 3)
+        self.assertIn('✓ utas 1000 · 1 foto', small)
+        self.assertIn('✗ utas 1001 · 1 foto · kode keluar 1', small)
+        large = run(cli_ui.RECEIPT_ALL_UP_TO+1, {2})
+        self.assertEqual(large.count('utas '), 1)
+        self.assertIn('✗ utas 1002', large)
+
+    def test_stall_stops_motion_and_wait_counts_down(self):
+        clock = [100.0]
+        with patch.dict(os.environ, {'TERM': 'xterm-256color'}), \
+                patch.object(cli_ui.time, 'monotonic', side_effect=lambda: clock[0]), \
+                redirect_stderr(io.StringIO()):
+            ui = cli_ui.UI(plain=True)
+            session = ui.downloading(2, self.media, self.state/'log')
+            ui.session = session
+            ui.event({'type': 'start', 'path': 'a.mp4'})
+            ui.event({'type': 'progress', 'downloaded': 10, 'total': None, 'speed': 5})
+            clock[0] += 2
+            self.assertFalse(session.stalled())
+            self.assertEqual(session.animation(), 2)
+            self.assertNotIn('Menunggu data', ui.status_text().plain)
+            clock[0] += 3
+            self.assertTrue(session.stalled())
+            self.assertEqual(session.animation(), cli_ui.STALL_AFTER)
+            clock[0] += 60
+            self.assertEqual(session.animation(), cli_ui.STALL_AFTER)
+            self.assertIn('Menunggu data · 1m 5d', ui.status_text().plain)
+            ui.event({'type': 'progress', 'downloaded': 20, 'total': None, 'speed': 5})
+            self.assertFalse(session.stalled())
+            with patch.object(cli_ui.time, 'time', return_value=1000.0):
+                ui.event({'type': 'wait', 'reason': 'rate limit', 'until': 1042.0})
+                self.assertFalse(session.stalled())
+                text = ui.status_text().plain
+                self.assertIn('Menunggu · rate limit', text)
+                self.assertIn('lanjut 42d', text)
+                self.assertEqual(text.count('█'), 10)
+                self.assertNotIn('█', ui.status_text(True).plain)
+            with patch.object(cli_ui.time, 'time', return_value=1021.0):
+                self.assertEqual(ui.status_text().plain.count('█'), 5)
+                self.assertIn('lanjut 21d', ui.status_text().plain)
+            ui.event({'type': 'wait_end'})
+            self.assertIsNone(ui.wait_until)
+            self.assertEqual((session.level, session.message), ('busy', 'Melanjutkan'))
+
+    def test_sparkline_scales_to_peak_and_keeps_width(self):
+        ui = cli_ui.UI(plain=True)
+        session = ui.downloading(1, self.media, self.state/'log')
+        glyph = cli_ui.GLYPHS[True]['spark']
+        self.assertEqual(session.sparkline(glyph), ' '*cli_ui.SPARK_WIDTH)
+        session.speeds.extend([0, 50, 100, 25])
+        line = session.sparkline(glyph)
+        self.assertEqual((len(line), line.strip()), (cli_ui.SPARK_WIDTH, '▁▅█▃'))
+        session.speeds.extend(range(1, 40))
+        self.assertEqual(len(session.speeds), cli_ui.SPARK_WIDTH)
+
+    def test_static_mode_has_no_motion_in_ui_object(self):
+        with patch.dict(os.environ, {'X_BOOKMARKS_STATIC': '1', 'TERM': 'xterm-256color'}):
+            ui = cli_ui.UI(plain=True)
+            self.assertFalse(ui.motion)
+            self.assertEqual(ui.spinner(), ui.g['run'])
+            self.assertEqual(ui.refresh_rate(), 4)
+            self.assertEqual(ui.bar(0, None, cli_ui.RED, lambda: 3.0, True).text(20).plain, '░'*20)
+        with patch.dict(os.environ, {'SSH_CONNECTION': '1 2 3 4', 'TERM': 'xterm-256color'}):
+            os.environ.pop('X_BOOKMARKS_STATIC', None)
+            ui = cli_ui.UI(plain=True)
+            self.assertTrue(ui.motion)
+            self.assertEqual(ui.refresh_rate(), 4)
+
+    def test_activity_leaves_a_receipt_and_checklist_marks_state(self):
+        for fail in (False, True):
+            ui, out = self.interactive_ui()
+            with self.assertRaises(ValueError) if fail else redirect_stderr(io.StringIO()):
+                with ui.activity('Langkah uji'):
+                    if fail:
+                        raise ValueError('uji')
+            self.assertIn(('✗' if fail else '✓') + ' Langkah uji', out.getvalue())
+        ui, out = self.interactive_ui(width=70)
+        ui.checklist('Status alat', [('ok', 'Paket', 'gallery-dl 1.0'), ('warn', 'Snapshot', 'belum ada'),
+                                     ('info', 'Alat', Path.home()/'tools/x')])
+        text = out.getvalue()
+        for expected in ('✓ Paket', '▲ Snapshot', '▸ Alat', '~/tools/x', '╭', 'Status alat'):
+            self.assertIn(expected, text)
+        buffer = io.StringIO()
+        with redirect_stderr(buffer):
+            plain = cli_ui.UI(plain=True)
+            plain.checklist('Status alat', [('ok', 'Paket', 'gallery-dl 1.0'), ('warn', 'Snapshot', 'belum ada')])
+        self.assertEqual(buffer.getvalue().splitlines(), ['Informasi | Nilai', 'Paket | gallery-dl 1.0', 'Snapshot | belum ada'])
+
+    def test_summary_lists_failed_threads_with_a_cap(self):
+        ui, out = self.interactive_ui()
+        session = ui.downloading(9, self.media, self.state/'log')
+        session.failures = [(str(2000+i), 1) for i in range(7)]
+        session.completed, session.failed, session.photos = 9, 7, 4
+        ui.console.print(session.summary('warn', False))
+        text = out.getvalue()
+        self.assertIn('Selesai dengan masalah', text)
+        for cid in range(2000, 2005):
+            self.assertIn(f'utas {cid}', text)
+        self.assertNotIn('utas 2005', text)
+        self.assertIn('dan 2 lainnya', text)
+        self.assertNotIn('photo', text)           # media folders are left out when there are problems
+        ui.console.file.truncate(0)
+        session.failures, session.failed = [], 0
+        ui.console.print(session.summary('stopped', False))
+        self.assertIn('Dihentikan', out.getvalue())
+        self.assertIn('photo', out.getvalue())
+
+    def test_missing_or_broken_settings_give_clear_errors(self):
+        for name in ('bookmarks.py', 'cli_ui.py', 'media_layout.py'):
+            (self.root/name).write_bytes((BASE/name).read_bytes())
+        cases = [(None, 'settings.json belum ada. Jalankan: bash setup.sh'),
+                 ('{broken', 'settings.json tidak valid'),
+                 ('{"start": "2026-01-01"}', 'settings.json belum memuat: end, timezone, browser')]
+        for content, expected in cases:
+            with self.subTest(content=content):
+                path = self.root/'settings.json'
+                path.unlink(missing_ok=True)
+                if content is not None:
+                    path.write_text(content)
+                result = subprocess.run([sys.executable, str(self.root/'bookmarks.py'), 'status', '--plain'],
+                                        cwd=self.root, capture_output=True, text=True, timeout=30)
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn('! GAGAL · ' + expected, result.stderr)
+                self.assertNotIn('Errno', result.stderr)
+
+    def test_dependency_pins_have_one_source(self):
+        import gallery_worker
+        pins = dict(line.split('==') for line in (BASE/'requirements.txt').read_text().split())
+        self.assertEqual(set(pins), {'gallery-dl', 'rich'})
+        self.assertEqual(gallery_worker.pinned_version('gallery-dl'), pins['gallery-dl'])
+        with self.assertRaises(ValueError):
+            gallery_worker.pinned_version('tidak-ada')
+        for name in ('setup.sh', 'gallery_worker.py'):
+            for version in pins.values():
+                self.assertNotIn(version, (BASE/name).read_text(), name)
+        for name in ('README.md', 'PANDUAN.md'):        # prose must follow requirements.txt
+            for version in pins.values():
+                self.assertIn(version, (BASE/name).read_text(), name)
+
+    def test_gallery_dl_routing_rules_match_media_layout(self):
+        import ast
+        import re
+        rules = json.loads((BASE/'gallery-dl.json').read_text())['extractor']['twitter']['directory']
+        found = {}
+        for expression, folder in rules.items():
+            match = re.search(r" in (\(.*\))$", expression)
+            if match:
+                found[tuple(folder)] = set(ast.literal_eval(match[1]))
+        self.assertEqual(found, {('photo',): set(PHOTO), ('video',): set(VIDEO)})
 
 if __name__=='__main__':unittest.main(verbosity=2)

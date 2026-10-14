@@ -1,4 +1,12 @@
-# Verifikasi X Bookmarks 3.1.0
+# Verifikasi X Bookmarks
+
+## Perubahan pada 3.1.1
+
+Tes baru mencakup: panel dan lebar bar sama pada 40/60/100/160 kolom, simbol satu sel dan cadangan ASCII, gerak comet tanpa lompatan, berhenti saat tidak ada data, hitung mundur penantian, riwayat kecepatan, struk per utas, mode tanpa gerak dan tanpa judul terminal, pesan settings.json yang hilang atau rusak, satu sumber versi dependensi, dan kecocokan daftar ekstensi `gallery-dl.json` dengan `media_layout.py`. Tes rilis tidak lagi menulis versi program secara langsung.
+
+Hasil CI dan pemeriksaan perangkat untuk tag v3.1.1 belum dicatat di sini; tambahkan setelah workflow tag selesai. Bagian di bawah adalah verifikasi 3.1.0.
+
+## Verifikasi 3.1.0
 
 Pengujian lokal: **45 tes lulus** dengan Python 3.14.4, gallery-dl 1.32.15, dan Rich 14.3.4. Ubuntu perangkat pengembang: 26.04.1 x64.
 
@@ -21,6 +29,6 @@ Pemasangan dan pemeriksaan perangkat pengguna dicatat terpisah dalam INSTALL-STA
 
 [CI tag v3.1.0](https://github.com/fathorrosi-dev/x-bookmarks/actions/runs/37636081902) lulus pada ketiga versi Python dan berhasil mempublikasikan ZIP serta SHA-256. Rilis bukan draft/prerelease.
 
-Upgrader mengambil paket GitHub nyata, memverifikasinya, dan memasang 3.1.0 ke home dari 3.0.2. Backup dan journal transaksi dikonfirmasi; dependensi tetap sama. Inventaris di bawah kunci sebelum/sesudah pemasangan cocok: 26 catatan/settings serta 564 media.
+Upgrader mengambil paket GitHub nyata, memverifikasinya, dan memasang 3.1.0 ke home dari 3.0.2. Backup dan journal transaksi dikonfirmasi; dependensi tetap sama. Inventaris catatan/settings dan media di bawah kunci sebelum/sesudah pemasangan cocok.
 
 Pemeriksaan rilis home lulus melalui CLI plain, CLI interaktif, dan jalur Python standar. Preview home memverifikasi ketiga warna, blok padat, pembaruan di tempat, serta kursor kembali tampil. Tes update ke versi sintetis yang lebih baru dan rollback tetap memakai salinan terisolasi, tidak memakai data utama atau menerbitkan rilis simulasi.

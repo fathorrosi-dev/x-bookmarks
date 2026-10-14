@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import patch
 BASE=Path(__file__).resolve().parents[1];sys.path.insert(0,str(BASE))
 import release_tools as maintenance,release_bundle,self_update as update
+CURRENT=maintenance.installed_version(BASE);_v=list(map(int,CURRENT.split('.')));NEXT='.'.join(map(str,_v[:2]+[_v[2]+1]))
 
 class Releases(unittest.TestCase):
     def setUp(self):
@@ -38,14 +39,14 @@ class Releases(unittest.TestCase):
         self.assertFalse((self.dest/'.state').exists());self.assertFalse((self.dest/'media').exists())
         (self.dest/'settings.json').write_text('broken');self.assertEqual(self.perform(check=True),0)
     def test_equal_and_older_versions_do_not_install(self):
-        for version in ('3.1.0','3.2.0'):
+        for version in (CURRENT,'99.0.0'):
             (self.dest/'bookmarks.py').write_text("VERSION = '"+version+"'")
             with patch.object(update,'install_package') as install:self.assertEqual(self.perform(),0);install.assert_not_called()
         self.assertFalse((self.dest/'.state').exists())
     def test_protocol_installs_verified_package_and_cleans_temporary(self):
         def install(source,root,*args,**kw):shutil.copy2(source/'bookmarks.py',root/'bookmarks.py');return 0
         with patch.object(update,'install_package',side_effect=install):self.assertEqual(self.perform(),0)
-        self.assertEqual(maintenance.installed_version(self.dest),'3.1.0');self.assertFalse(list((self.dest/'.state').glob('release-*')))
+        self.assertEqual(maintenance.installed_version(self.dest),CURRENT);self.assertFalse(list((self.dest/'.state').glob('release-*')))
     def test_checksum_corruption_and_wrong_filename_leave_program(self):
         for change in ('data','filename'):
             self.make_bundle()
@@ -84,13 +85,13 @@ class Releases(unittest.TestCase):
         for i,name in enumerate(('x-bookmarks/../escape','/x-bookmarks/app.py','x-bookmarks/settings.json','x-bookmarks/.state/private','x-bookmarks/tests/../../escape','x-bookmarks/a\\b.py','x-bookmarks/.venv/private')):
             archive=self.root/'bad.zip'
             with zipfile.ZipFile(archive,'w') as out:out.writestr(name,b'bad')
-            with self.assertRaises(ValueError):update.safe_unpack(archive,self.root/('unpack'+str(i)),'3.1.0')
+            with self.assertRaises(ValueError):update.safe_unpack(archive,self.root/('unpack'+str(i)),CURRENT)
         for kind in ('symlink','duplicate'):
             with zipfile.ZipFile(self.root/'bad.zip','w') as out:
                 info=zipfile.ZipInfo('x-bookmarks/bookmarks.py');info.external_attr=(0o120777 if kind=='symlink' else 0o100644)<<16
                 out.writestr(info,b'bad')
                 if kind=='duplicate':out.writestr('x-bookmarks/BOOKMARKS.PY',b'bad')
-            with self.assertRaises(ValueError):update.safe_unpack(self.root/'bad.zip',self.root/kind,'3.1.0')
+            with self.assertRaises(ValueError):update.safe_unpack(self.root/'bad.zip',self.root/kind,CURRENT)
     def test_version_platform_python_repository_and_missing_file_validation(self):
         meta=json.loads((self.source/'release.json').read_text())
         for change in ({'version':'3.2.0'},{'platforms':['windows-x86_64']},{'python_min':'9.0','python_max':'9.1'},{'repository':'other/repo'},{'files':[n for n in meta['files'] if n!='self_update.py']}):
@@ -100,9 +101,9 @@ class Releases(unittest.TestCase):
         with self.assertRaises(ValueError):maintenance.validate_package(self.source)
     def test_archive_limits_and_manifest_extra_file_rejected(self):
         with zipfile.ZipFile(self.root/'large.zip','w',zipfile.ZIP_DEFLATED) as out:out.writestr('x-bookmarks/huge.py',b'0'*(20*1024*1024+1))
-        with self.assertRaisesRegex(ValueError,'ukuran'):update.safe_unpack(self.root/'large.zip',self.root/'large','3.1.0')
+        with self.assertRaisesRegex(ValueError,'ukuran'):update.safe_unpack(self.root/'large.zip',self.root/'large',CURRENT)
         with zipfile.ZipFile(self.archive,'a') as out:out.writestr('x-bookmarks/unlisted.py',b'extra')
-        with self.assertRaisesRegex(ValueError,'daftar file'):update.safe_unpack(self.archive,self.root/'extra','3.1.0')
+        with self.assertRaisesRegex(ValueError,'daftar file'):update.safe_unpack(self.archive,self.root/'extra',CURRENT)
     def test_lock_busy_and_wait_for_other_process(self):
         with maintenance.file_lock(self.dest/'.state/run.lock'):
             with self.assertRaisesRegex(ValueError,'berjalan'):self.perform()
@@ -114,9 +115,9 @@ class Releases(unittest.TestCase):
             self.assertGreater(time.monotonic()-started,.5);holder.wait()
     def test_full_self_update_to_newer_version_and_real_rollback(self):
         self.environment()
-        text=(self.source/'bookmarks.py').read_text().replace("VERSION = '3.1.0'","VERSION = '3.1.1'");(self.source/'bookmarks.py').write_text(text)
-        meta=json.loads((self.source/'release.json').read_text());meta['version']='3.1.1';(self.source/'release.json').write_text(json.dumps(meta));self.make_bundle()
-        self.assertEqual(self.perform(),0);self.assertEqual(maintenance.installed_version(self.dest),'3.1.1')
+        text=(self.source/'bookmarks.py').read_text().replace("VERSION = '"+CURRENT+"'","VERSION = '"+NEXT+"'");(self.source/'bookmarks.py').write_text(text)
+        meta=json.loads((self.source/'release.json').read_text());meta['version']=NEXT;(self.source/'release.json').write_text(json.dumps(meta));self.make_bundle()
+        self.assertEqual(self.perform(),0);self.assertEqual(maintenance.installed_version(self.dest),NEXT)
         maintenance.rollback(self.dest);self.assertEqual(maintenance.installed_version(self.dest),'3.0.2');self.assertFalse((self.dest/'self_update.py').exists())
         self.assertEqual((self.dest/'settings.json').read_text(),'{"private":"preserve"}')
         self.assertEqual((self.dest/'.state/downloaded.sqlite3').read_bytes(),b'archive sentinel');self.assertEqual((self.dest/'media/photo/saved.jpg').read_bytes(),b'media sentinel')
@@ -175,7 +176,7 @@ if __name__=='__main__':sys.exit(main())"""
             while not(self.dest/'.state/started').exists() and time.monotonic()<deadline:time.sleep(.02)
             self.assertTrue((self.dest/'.state/started').exists());p.send_signal(signal.SIGINT);out,err=p.communicate(timeout=30)
             self.assertEqual(p.returncode,130,out+err)
-        self.assertEqual(maintenance.installed_version(self.dest),'3.1.0')
+        self.assertEqual(maintenance.installed_version(self.dest),CURRENT)
     def test_ctrl_c_before_install_wait_and_during_protected_install(self):
         self.environment()
         # Use a local installer stage marker so SIGINT is delivered during installation.

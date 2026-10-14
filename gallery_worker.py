@@ -23,13 +23,23 @@ class Events:
             self.stream.flush()
 
 
+def pinned_version(name):
+    """requirements.txt is the only place that states a dependency pin."""
+    for line in (Path(__file__).resolve().parent / 'requirements.txt').read_text().splitlines():
+        key, _, value = line.strip().partition('==')
+        if key == name and value:
+            return value
+    raise ValueError(f'requirements.txt tidak memuat versi terpatok untuk {name}.')
+
+
 def install(events):
     """Patch only this worker; leave gallery config, jobs and archive native."""
     import gallery_dl
     from gallery_dl import job, output, path
     from gallery_dl.extractor.common import Extractor
-    if gallery_dl.__version__ != '1.32.15':
-        raise ValueError('Adapter membutuhkan gallery-dl 1.32.15; jalankan bash setup.sh.')
+    wanted = pinned_version('gallery-dl')
+    if gallery_dl.__version__ != wanted:
+        raise ValueError(f'Adapter membutuhkan gallery-dl {wanted}; jalankan bash setup.sh.')
 
     class RoutedPath(path.PathFormat):
         def set_filename(self, kwdict):

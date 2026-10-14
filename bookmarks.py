@@ -25,7 +25,7 @@ BASE = Path(__file__).resolve().parent
 UTC = timezone.utc
 STATE = BASE / '.state'
 MEDIA = BASE / 'media'
-VERSION = '3.1.0'
+VERSION = '3.1.1'
 
 from cli_ui import UI, BLUE, RED
 from media_layout import ensure_layout, is_partial, media_files, media_kind, organize
@@ -164,12 +164,30 @@ def resolve_browser(value):
     return f'firefox/.x.com:{matches[0]}'
 
 
-def gallery_command(settings, options):
+def gallery_args(settings, options):
+    """gallery-dl options only; run_gallery adds the interpreter and worker script."""
     if importlib.util.find_spec('gallery_dl') is None:
         raise ValueError('gallery-dl belum terpasang. Jalankan: bash setup.sh')
-    return [sys.executable, '-m', 'gallery_dl', '--config-ignore', '-c', str(BASE / 'gallery-dl.json'),
+    return ['--config-ignore', '-c', str(BASE / 'gallery-dl.json'),
             '--cache-file', str(STATE / 'cache.sqlite3'), '--no-postprocessors',
             '--cookies-from-browser', settings['browser'], '--no-input', '--no-colors', *options]
+
+
+def load_settings():
+    path = BASE / 'settings.json'
+    try:
+        settings = json.loads(path.read_text())
+    except FileNotFoundError:
+        raise ValueError('settings.json belum ada. Jalankan: bash setup.sh') from None
+    except json.JSONDecodeError as exc:
+        raise ValueError(f'settings.json tidak valid ({exc.msg}, baris {exc.lineno}). '
+                         'Perbaiki berkasnya atau salin ulang dari settings.example.json.') from None
+    missing = [key for key in ('start', 'end', 'timezone', 'browser')
+               if not isinstance(settings, dict) or key not in settings]
+    if missing:
+        raise ValueError('settings.json belum memuat: ' + ', '.join(missing)
+                         + '. Salin contohnya dari settings.example.json.')
+    return settings
 
 
 def stop_worker(process):
@@ -188,7 +206,7 @@ def stop_worker(process):
             pass
 
 
-def run_gallery(cmd, log_path, stdout=None, ui=None):
+def run_gallery(args, log_path, stdout=None, ui=None):
     """Separate native stdout/logs from an inherited structured-event pipe."""
     read_fd, write_fd = os.pipe()
     process = None
@@ -197,7 +215,7 @@ def run_gallery(cmd, log_path, stdout=None, ui=None):
     pending = b''
     try:
         with log_path.open('a') as log:
-            worker = [cmd[0], str(BASE / 'gallery_worker.py'), str(write_fd), *cmd[3:]]
+            worker = [sys.executable, str(BASE / 'gallery_worker.py'), str(write_fd), *args]
             process = subprocess.Popen(worker, stdout=stdout if stdout is not None else log,
                                        stderr=log, pass_fds=(write_fd,), start_new_session=True)
             os.close(write_fd)
@@ -251,7 +269,7 @@ def extract(settings, path, sample=False, ui=None):
     if sample:
         options += ['--post-range', '1-5']
     options += ['https://x.com/i/bookmarks']
-    cmd = gallery_command(settings, options)
+    args = gallery_args(settings, options)
     temp = path.with_name(path.name + '.partial')
     message = 'Mengambil sampel 5 bookmark' if sample else 'Mengambil metadata bookmark'
     if not ui:
@@ -259,7 +277,7 @@ def extract(settings, path, sample=False, ui=None):
     with (ui.activity(message) if ui else nullcontext()):
         with temp.open('w') as stream:
             kwargs = {'ui': ui} if ui else {}
-            code = run_gallery(cmd, STATE / 'scan.log', stdout=stream, **kwargs)
+            code = run_gallery(args, STATE / 'scan.log', stdout=stream, **kwargs)
     if code:
         raise ValueError(f'Scan gagal. Snapshot sebelumnya tetap tersimpan; periksa {STATE / "scan.log"}.')
     posts = list(directory_posts(temp))  # Also detects DataJob errors despite exit code 0.
@@ -364,11 +382,11 @@ def download(settings, dest, args, ui=None):
                            '-o', 'base-directory=' + json.dumps(str(MEDIA)),
                            '--download-archive', str(archive_path),
                            f'https://x.com/i/web/status/{cid}']
-                cmd = gallery_command(settings, options)
+                args_for_thread = gallery_args(settings, options)
                 session.thread_start(cid)
                 with (STATE / 'download.log').open('a') as log:
                     log.write(f'\n{datetime.now(UTC).isoformat()} utas={cid} mode={mode}\n')
-                code = run_gallery(cmd, STATE / 'download.log', ui=ui)
+                code = run_gallery(args_for_thread, STATE / 'download.log', ui=ui)
                 session.thread_end(code)
                 completed += 1
                 if code:
@@ -390,25 +408,31 @@ def download(settings, dest, args, ui=None):
 
 def status(settings):
     packages = []
+    packages_ready = True
     for name in ('gallery-dl', 'rich'):
         try:
             packages.append(name + ' ' + importlib.metadata.version(name))
         except importlib.metadata.PackageNotFoundError:
             packages.append(name + ' belum terpasang')
+            packages_ready = False
     path = STATE / 'bookmarks.json'
     snapshot = datetime.fromtimestamp(path.stat().st_mtime, UTC).astimezone(
         ZoneInfo(settings['timezone'])).isoformat() if path.exists() else 'belum ada'
     files = list(media_files(MEDIA))
     finished = [p for p in files if not is_partial(p)]
-    rows = [('Versi', f'{VERSION} · Python {sys.version.split()[0]}'),
-            ('Paket', ' · '.join(packages)), ('Alat', BASE),
-            ('Foto', MEDIA / 'photo'), ('Video', MEDIA / 'video'), ('Catatan', STATE),
-            ('Browser', settings['browser']), ('Snapshot', snapshot),
-            ('Media', f'{sum(media_kind(p) == "photo" for p in finished)} foto · '
-                      f'{sum(media_kind(p) == "video" for p in finished)} video · '
-                      f'{len(files) - len(finished)} sementara'),
-            ('Akar media', f'{sum(p.parent == MEDIA for p in finished)} file; gunakan organize untuk hasil lama')]
-    UI_INSTANCE.table(('Informasi', 'Nilai'), rows)
+    at_root = sum(p.parent == MEDIA for p in finished)
+    # State drives the marker in the terminal view: ok, warn (needs attention) or info.
+    rows = [('info', 'Versi', f'{VERSION} · Python {sys.version.split()[0]}'),
+            ('ok' if packages_ready else 'warn', 'Paket', ' · '.join(packages)),
+            ('info', 'Alat', BASE),
+            ('info', 'Foto', MEDIA / 'photo'), ('info', 'Video', MEDIA / 'video'), ('info', 'Catatan', STATE),
+            ('info', 'Browser', settings['browser']),
+            ('ok' if path.exists() else 'warn', 'Snapshot', snapshot),
+            ('info', 'Media', f'{sum(media_kind(p) == "photo" for p in finished)} foto · '
+                              f'{sum(media_kind(p) == "video" for p in finished)} video · '
+                              f'{len(files) - len(finished)} sementara'),
+            ('warn' if at_root else 'ok', 'Akar media', f'{at_root} file; gunakan organize untuk hasil lama')]
+    UI_INSTANCE.checklist('Status alat', rows)
 
 
 def organize_media():
@@ -452,7 +476,7 @@ def main():
         parser.error('--check/--wait hanya berlaku pada update')
     if args.limit is not None and args.limit < 1:
         parser.error('--limit harus lebih besar dari 0')
-    settings = json.loads((BASE / 'settings.json').read_text())
+    settings = load_settings()
     for key in ['start', 'end', 'browser']:
         if getattr(args, key):
             settings[key] = getattr(args, key)
@@ -468,7 +492,8 @@ def main():
         except BlockingIOError as exc:
             raise ValueError('Proses lain masih berjalan. Tunggu atau hentikan proses tersebut dahulu.') from exc
         if args.action in {'check', 'scan', 'download'}:
-            settings['browser'] = resolve_browser(settings['browser'])
+            with ui.activity('Mencari sesi X di browser'):
+                settings['browser'] = resolve_browser(settings['browser'])
         if args.action == 'status':
             status(settings)
         elif args.action == 'check':

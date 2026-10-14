@@ -51,7 +51,17 @@ if ! "$PY" -m pip --version >/dev/null 2>&1; then
 fi
 if [[ "$MODE" == "--upgrade" ]]; then
   "$PY" -m pip install --upgrade -r "$BASE/requirements.txt"
-elif ! "$PY" -c 'import gallery_dl, requests, rich; from importlib.metadata import version; assert version("gallery-dl") == "1.32.15"; assert version("rich") == "14.3.4"' >/dev/null 2>&1; then
+elif ! "$PY" - "$BASE/requirements.txt" >/dev/null 2>&1 <<'PY'
+import sys
+from importlib.metadata import version
+import gallery_dl, requests, rich
+for line in open(sys.argv[1]):
+    line = line.strip()
+    if line and not line.startswith('#'):
+        name, _, wanted = line.partition('==')
+        assert version(name) == wanted, name
+PY
+then
   if [[ "$MODE" == "--check" ]]; then
     printf '%s\n' 'Paket belum lengkap. Jalankan bash setup.sh.' >&2
     exit 1

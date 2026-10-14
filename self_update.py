@@ -23,7 +23,7 @@ def github_token():
     if shutil.which('gh'):
         result=subprocess.run(['gh','auth','token','--hostname','github.com'],capture_output=True,text=True,encoding='utf-8',timeout=15)
         if result.returncode==0 and result.stdout.strip():return result.stdout.strip()
-    raise ValueError('Repo rilis privat membutuhkan login GitHub. Pasang GitHub CLI lalu jalankan gh auth login; gunakan akun yang punya akses repo.')
+    raise ValueError('Pembaruan membutuhkan login GitHub. Pasang GitHub CLI lalu jalankan gh auth login, atau isi GH_TOKEN/GITHUB_TOKEN dengan izin Contents: read.')
 
 class SafeRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self,req,fp,code,msg,headers,newurl):
@@ -50,7 +50,7 @@ class GitHub:
                 if len(data)>limit:raise ValueError('Paket/metadata rilis melebihi batas ukuran')
                 return data
         except urllib.error.HTTPError as exc:
-            if exc.code==404:raise ValueError('Rilis stabil belum tersedia atau akun GitHub tidak punya akses repo privat.') from None
+            if exc.code==404:raise ValueError('Rilis stabil belum tersedia atau akun GitHub tidak dapat membaca repo rilis.') from None
             if exc.code in (401,403):raise ValueError('Akses GitHub ditolak; periksa login, izin Contents: read, atau batas permintaan.') from None
             raise ValueError('GitHub tidak dapat melayani pembaruan (HTTP '+str(exc.code)+'). Coba kembali nanti.') from None
         except (urllib.error.URLError,TimeoutError):raise ValueError('Koneksi ke GitHub terputus; program belum diubah. Coba update kembali.') from None

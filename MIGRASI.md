@@ -8,7 +8,7 @@ Lokasi pemakaian utama yang disarankan adalah **~/tools/x-bookmarks**. Alat, has
 2. Masuk ke folder alat yang sekarang. Jika masih memakai paket dalam Documents/Codex:
 
 ```bash
-cd '/home/aldebaran/Documents/Codex/2026-10-06/pa-possible-ya-otomatisasi-download-bookmark/outputs/x-bookmarks'
+cd '/lokasi/folder-alat-lama/x-bookmarks'
 ```
 
 3. Pilih tujuan kosong lalu jalankan:
@@ -79,7 +79,9 @@ Versi 3.0.2 memperbarui palet warna. Pembaruan dari 3.0.1 tidak memerlukan `orga
 
 Versi 3.0.1 memperbarui bentuk progress bar. Pembaruan dari versi 3.0 tidak memerlukan `organize` ulang; folder media, snapshot, dan database tetap dipakai.
 
-Mulai 3.1.0, program memiliki self-update rilis stabil dari repo privat fathorrosi-dev/x-bookmarks:
+Versi 3.1.1 memperbarui tampilan unduhan (panel dengan simbol, animasi yang hanya bergerak saat ada aktivitas, struk per utas, dan ringkasan berwarna), mengganti pesan saat settings.json tidak ada atau rusak, dan menjadikan requirements.txt satu-satunya sumber versi dependensi. Pembaruan dari 3.1.0 tidak memerlukan `organize` ulang; media, pengaturan, snapshot, dan database dipertahankan. Rollback mengembalikan tampilan 3.1.0.
+
+Mulai 3.1.0, program memiliki self-update rilis stabil dari repo fathorrosi-dev/x-bookmarks:
 
 ```bash
 cd "$HOME/tools/x-bookmarks"
@@ -89,7 +91,7 @@ cd "$HOME/tools/x-bookmarks"
 
 Di perangkat baru, login ulang GitHub CLI dengan `gh auth login`; login/kredensial perangkat lama tidak dimasukkan dalam paket. Ini terpisah dari profil Firefox untuk login X. Self-update bekerja tanpa membaca rentang tanggal atau settings pribadi. Update hanya berjalan saat dipanggil.
 
-Jika sumber masih 3.0.2, gunakan paket manual 3.1.0 sekali. Setelah itu updater mengambil paket sendiri. Opsi setup --upgrade tetap hanya mengikuti dependensi rilis, bukan mencari rilis program.
+Jika sumber masih 3.0.2, gunakan paket manual rilis terbaru sekali. Setelah itu updater mengambil paket sendiri. Opsi setup --upgrade tetap hanya mengikuti dependensi rilis, bukan mencari rilis program.
 Untuk memperbarui program, dapatkan paket rilis baru dahulu, lalu letakkan di folder terpisah dari tools utama. Paket boleh berada di mana pun; Documents/Codex tidak diperlukan. Gunakan `update.sh` dari **paket rilis baru**, bukan dari tools tujuan. Script menolak sumber dan tujuan yang merupakan folder yang sama.
 
 Contoh berikut memakai `/lokasi/paket-rilis-baru` sebagai placeholder: ganti dengan lokasi paket yang benar.

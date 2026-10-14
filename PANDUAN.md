@@ -1,4 +1,4 @@
-# Panduan X Bookmarks — versi 3.1.0
+# Panduan X Bookmarks — versi 3.1.1
 
 Alat ini mengambil media utas X berdasarkan **tanggal nge-bookmark**, dengan tanggal awal dan akhir inklusif dalam **WIB / Asia/Jakarta**. Hasil seluruh rentang digabung dalam satu koleksi, dibedakan berdasarkan format file.
 
@@ -29,7 +29,7 @@ Animasi yang disebut “GIF” di X dapat disimpan sebagai MP4; file tersebut ma
 
 ## Pemakaian sekarang dan jenis pembaruan
 
-Mulai **3.1.0**, program memiliki self-update rilis stabil. Perintah download/scan/list yang sudah dipakai tetap berlaku. Jika tools masih 3.0.2, pasang paket 3.1.0 sekali melalui updater manual; setelah itu tidak perlu mengambil paket secara manual untuk pembaruan berikutnya.
+Mulai **3.1.0**, program memiliki self-update rilis stabil. Perintah download/scan/list yang sudah dipakai tetap berlaku. Jika tools masih 3.0.2, pasang paket rilis terbaru sekali melalui updater manual; setelah itu tidak perlu mengambil paket secara manual untuk pembaruan berikutnya.
 
 | Kebutuhan | Cara | Yang dilakukan |
 |---|---|---|
@@ -54,9 +54,9 @@ cd "$HOME/tools/x-bookmarks"
 
 `./x-bookmarks check` masih memeriksa sesi X. `./x-bookmarks update --check` hanya memeriksa rilis program: tidak membutuhkan tanggal yang valid, settings, login X, atau profil Firefox. Tambahkan `--plain` untuk teks sederhana; NO_COLOR dihormati. Opsi --check/--wait hanya berlaku pada update.
 
-Repo rilis **fathorrosi-dev/x-bookmarks** privat. Pasang GitHub CLI (`sudo apt install gh`), lalu `gh auth login` dengan akun yang punya akses repo. Login laptop ini dapat dipakai juga untuk tools YouTube. Alternatif otomasi adalah GH_TOKEN, lalu GITHUB_TOKEN, dengan izin Contents: read; token tidak ditulis ke settings atau log. Login GitHub berbeda dari login X/Firefox.
+Updater memakai API GitHub dengan token dan selalu memintanya, walau repo rilis **fathorrosi-dev/x-bookmarks** bersifat publik. Pasang GitHub CLI (`sudo apt install gh`), lalu `gh auth login`. Alternatif otomasi adalah GH_TOKEN, lalu GITHUB_TOKEN, dengan izin Contents: read; token tidak ditulis ke settings atau log. Login GitHub berbeda dari login X/Firefox.
 
-Pembaruan hanya berjalan saat dipanggil. Tools mengambil rilis stabil yang dipublikasikan setelah CI lulus, bukan isi branch pengembangan atau prerelease. ZIP dan SHA-256 diverifikasi sebelum ekstraksi; versi, Linux x64, serta Python standar 3.10–3.14 diperiksa. Versi sama/lebih lama dilewati. Checksum memeriksa integritas unduhan; repo GitHub privat tetap menjadi sumber rilis tepercaya.
+Pembaruan hanya berjalan saat dipanggil. Tools mengambil rilis stabil yang dipublikasikan setelah CI lulus, bukan isi branch pengembangan atau prerelease. ZIP dan SHA-256 diverifikasi sebelum ekstraksi; versi, Linux x64, serta Python standar 3.10–3.14 diperiksa. Versi sama/lebih lama dilewati. Checksum memeriksa integritas unduhan, tetapi diambil dari rilis yang sama dengan ZIP, jadi tidak melindungi dari akun GitHub pemilik yang dibobol. Aktifkan autentikasi dua faktor dan batasi siapa yang boleh menulis ke repo. Jika paket suatu saat dibagikan ke orang lain, pertimbangkan attestation artefak GitHub atau tanda tangan terpisah.
 
 Output memakai tahap pemeriksaan, unduhan/verifikasi, dan pemasangan tanpa mencetak tiap byte. Koneksi terputus, login ditolak, paket tidak lengkap, atau checksum salah tidak mengganti program. Log pemasangan ada di `.state/update.log`; backup di `.state/program-backups/`.
 
@@ -74,7 +74,7 @@ Jalur ini memakai pustaka standar Python tanpa Rich/gallery-dl. Jika pemulihan s
 ### Pemasangan pertama dari 3.0.2
 
 ```bash
-cd /jalur/paket-rilis-3.1.0
+cd /jalur/paket-rilis
 bash update.sh "$HOME/tools/x-bookmarks" --wait
 cd "$HOME/tools/x-bookmarks"
 bash setup.sh --check
@@ -90,7 +90,7 @@ Bagian ini khusus hasil versi 2 yang masih berada di akar `media/`. Untuk pemasa
 **Tunggu download lama selesai.** Jalankan pembaruan dari folder paket versi 3, bukan dari folder alat lama:
 
 ```bash
-cd /jalur/paket-rilis-3.1.0
+cd /jalur/paket-rilis
 bash update.sh "$HOME/tools/x-bookmarks"
 ```
 
@@ -216,22 +216,51 @@ Untuk menyertakan penulis lain dalam percakapan:
 
 Media yang sudah tersedia tetap dilewati. Beralih mode tidak menghapus media lama.
 
-## Membaca tampilan baru
+## Membaca tampilan
 
-Palet versi 3.0.2 berlaku juga pada spinner, header tabel, dan ringkasan. Teks sekunder memakai `#94A3B8`. Pembaruan dari 3.0.1/3.0.2 tidak memerlukan `organize` ulang.
+Sejak 3.1.1 unduhan tampil dalam satu panel berbingkai bulat dengan simbol satu sel lebar. Teks tetap menjelaskan setiap keadaan; simbol hanya mempercepat dibaca. Teks sekunder memakai `#94A3B8`. Pembaruan dari 3.1.0 tidak memerlukan `organize` ulang.
 
-- **Pink `#FFC2D4`:** persentase dan jumlah utas selesai diproses dibanding total setelah `--limit`. Utas gagal tetap termasuk “diproses”; jumlah gagal terpisah.
-- **Red `#E8384F`:** file aktif. Persentase dan ETA hanya ditampilkan jika ukuran/kecepatan tersedia. Ukuran belum diketahui ditandai tiga blok yang bergerak bolak-balik, tanpa persentase atau ETA. Blok hanya bergerak saat mengunduh; diam saat menunggu, retry, gagal, atau selesai.
-- **Sky blue `#A8D8F0`:** judul dan informasi pendukung.
-- **Foto/video:** file baru yang berhasil disimpan pada pemanggilan saat ini, bukan jumlah seluruh koleksi.
-- **Dilewati:** file yang sudah tersedia.
-- **GAGAL:** masalah yang perlu diperiksa di log; warna merah sendiri bukan tanda error.
-- **Menunggu:** batas permintaan X atau jeda panjang. Countdown hanya muncul jika waktunya diketahui.
+| Simbol | Arti |
+|---|---|
+| `◆` | Judul panel dan ringkasan |
+| `▸` | Bar Utas, baris informasi, dan lokasi folder |
+| `↓` | File aktif |
+| `▣` | Jenis media dan nama file |
+| `⇣` | Kecepatan. Deretan `▁▂▃▅▇` di sebelahnya adalah riwayat kecepatan beberapa detik terakhir, berskala terhadap puncaknya |
+| `◷` | Waktu: durasi, sisa waktu, atau penantian |
+| `✓` | Berhasil |
+| `↷` | Dilewati karena sudah tersedia |
+| `↻` | Mencoba kembali |
+| `▲` | Perlu perhatian |
+| `✗` | Gagal |
+| `○` | Dihentikan |
+
+- **Pink `#FFC2D4`:** bar Utas dan spinner. Persentase dan jumlah utas selesai diproses dibanding total setelah `--limit`. Utas gagal tetap termasuk "diproses"; jumlah gagal terpisah.
+- **Red `#E8384F`:** bar file aktif dan kegagalan. Persentase dan ETA hanya ditampilkan jika ukuran/kecepatan tersedia. Ukuran belum diketahui ditandai kepala terang berekor yang meluncur bolak-balik, tanpa persentase atau ETA.
+- **Sky blue `#A8D8F0`:** judul dan ikon informasi.
+- **Mint `#8EE3B0`:** berhasil dan ringkasan selesai.
+- **Amber `#FFD27A`:** menunggu, mencoba kembali, peringatan, serta ringkasan selesai dengan masalah atau dihentikan.
+- **Foto/video:** file baru yang berhasil disimpan pada pemanggilan saat ini, bukan jumlah seluruh koleksi. **Dilewati:** file yang sudah tersedia. **Utas gagal:** perlu diperiksa di log; warna saja bukan tanda error.
 - Sisa waktu hanya untuk file aktif. Durasi tampil dengan `j` (jam), `m` (menit), `d` (detik).
 
-Kedua bar memakai blok padat `█`, bagian kosong `░` abu-abu gelap `#334155`, dan pecahan blok pada ujung isian agar pergerakannya halus. Lebar bar mengikuti ruang terminal. Di bawah 60 kolom, bar file menampilkan persentase saja; ukuran pindah ke baris kecepatan. `—%` berarti ukuran belum diketahui. Nama dan informasi panjang dipendekkan agar panel tidak membungkus.
+Gerakan selalu berarti ada aktivitas. Spinner di baris status berputar saat mengambil metadata atau mengunduh, dan kepala bar file bergerak hanya selama data benar-benar datang. Saat menunggu batas permintaan, mencoba kembali, gagal, atau tidak ada data selama 4 detik, gerakan berhenti. Pada kasus terakhir status berubah menjadi `◷ Menunggu data`. Saat menunggu batas permintaan, baris status menampilkan bar yang menyusut dan sisa waktunya.
 
-Panel diperbarui di tempat yang sama sekitar empat kali per detik. Setelah selesai, panel diganti ringkasan permanen. Tidak diperlukan pengaturan khusus pada Warp.
+Setiap utas yang selesai meninggalkan satu baris di atas panel, misalnya `✓ utas 1834567890 · 3 foto · 1 video · 12d`. Pada proses lebih dari 40 utas hanya utas bermasalah yang dicatat satu per satu. Setelah semua selesai panel berhenti sesaat dengan bingkai hijau, lalu diganti ringkasan permanen: hijau jika selesai, kuning jika selesai dengan masalah (menyebut sampai lima utas gagal), atau kuning dengan `○ Dihentikan`. Lokasi di ringkasan memakai `~/` untuk folder home.
+
+`./x-bookmarks status` menampilkan kartu dengan `▲` pada paket yang belum terpasang, snapshot yang belum ada, dan file lama di akar media. Langkah yang menunggu X (mencari sesi, mengambil sampel atau metadata) meninggalkan baris `✓ langkah · lama`, atau `✗` jika gagal.
+
+Bar memakai blok padat `█`, bagian kosong `░` abu-abu gelap `#334155`, dan pecahan blok pada ujung isian. Pada terminal truecolor tanpa `NO_COLOR`, isian bar berupa gradasi (pink ke biru untuk Utas, merah ke pink untuk file). Lebar kedua bar sama dan mengikuti ruang terminal. Di bawah 60 kolom, bar file menampilkan persentase saja; ukuran pindah ke baris kecepatan, dan riwayat kecepatan disembunyikan. `—%` berarti ukuran belum diketahui. Nama dan informasi panjang dipendekkan agar panel tidak membungkus.
+
+Panel diperbarui sekitar 12 kali per detik, atau 4 kali per detik lewat SSH. Selama berjalan, judul terminal menampilkan `x-bookmarks · 72/120 utas`, lalu judul sebelumnya dipulihkan dengan perintah tumpukan judul xterm. Terminal yang mengabaikan perintah itu menampilkan `x-bookmarks · N/N utas · selesai` setelah proses berakhir. Tampilan ini belum diperiksa langsung di Warp.
+
+| Pengaturan | Efek |
+|---|---|
+| `--plain` | Teks sederhana tanpa panel, warna, atau animasi. Juga dipilih otomatis saat keluaran dialihkan atau `TERM=dumb` |
+| `NO_COLOR=1` | Tanpa warna dan gradasi; panel tetap diperbarui di tempat |
+| `X_BOOKMARKS_STATIC=1` | Tanpa gerakan: spinner diam, bar ukuran-tak-diketahui kosong, tanpa jeda penutup. Angka tetap diperbarui 4 kali per detik |
+| `X_BOOKMARKS_NO_TITLE=1` | Judul terminal tidak diubah |
+
+Di terminal tanpa Unicode (`TERM=linux` atau encoding bukan UTF-8) bingkai, simbol, bar, dan garis pemisah memakai karakter ASCII. Titik tengah `·` pada teks tetap karakter Unicode.
 
 Untuk mencoba tampilan tanpa mengakses X atau mengunduh file:
 
@@ -239,7 +268,7 @@ Untuk mencoba tampilan tanpa mengakses X atau mengunduh file:
 .venv/bin/python tests/demo.py
 ```
 
-Angka dalam preview adalah simulasi. Preview mencakup ukuran belum diketahui, jeda menunggu dengan animasi berhenti, lalu progres normal. Coba memperkecil terminal untuk melihat tata letak ringkas.
+Angka dalam preview adalah simulasi. Preview mencakup ukuran belum diketahui, jeda menunggu dengan gerakan berhenti, lalu progres normal. Coba memperkecil terminal untuk melihat tata letak ringkas, atau jalankan dengan `X_BOOKMARKS_STATIC=1` untuk membandingkan.
 
 Untuk teks sederhana:
 
@@ -288,7 +317,7 @@ Untuk memeriksa dependensi:
 bash setup.sh --check
 ```
 
-`bash setup.sh --upgrade` memperbarui dependensi sesuai `requirements.txt`, bukan memperbarui kode program. gallery-dl dan Rich tetap dipatok; dependensi lain yang tidak dipatok dapat diperbarui sesuai batas paket. Jika X berubah, adapter dan pin versi perlu diperbarui serta diuji bersama dalam rilis program baru.
+`bash setup.sh --upgrade` memperbarui dependensi sesuai `requirements.txt`, bukan memperbarui kode program. gallery-dl dan Rich tetap dipatok; dependensi lain yang tidak dipatok dapat diperbarui sesuai batas paket. Jika X berubah, adapter dan pin versi perlu diperbarui serta diuji bersama dalam rilis program baru. Langkah menaikkan gallery-dl atau Rich ada di bagian Pengembang pada README; `requirements.txt` adalah satu-satunya sumber versi yang dibaca `setup.sh` dan adapter.
 
 Tes lokal tanpa mengakses X:
 
