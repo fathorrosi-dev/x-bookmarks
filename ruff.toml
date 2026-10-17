@@ -1,0 +1,8 @@
+line-length = 120
+target-version = "py310"
+
+[lint]
+select = ["E9", "F"]
+
+[format]
+quote-style = "single"

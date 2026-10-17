@@ -1,6 +1,6 @@
 """Release protocol, real installation/rollback and interruption without X login."""
-import hashlib,io,json,os,shutil,signal,subprocess,sys,tempfile,time,unittest,zipfile
-from pathlib import Path
+import json,os,re,shutil,signal,subprocess,sys,tempfile,time,unittest,zipfile
+from pathlib import Path,PurePosixPath
 from unittest.mock import patch
 BASE=Path(__file__).resolve().parents[1];sys.path.insert(0,str(BASE))
 import release_tools as maintenance,release_bundle,self_update as update
@@ -72,15 +72,99 @@ class Releases(unittest.TestCase):
         self.assertFalse(new.has_header('Authorization'))
         for url in ('http://github.com/a','https://evil.example/a'):
             with self.assertRaises(ValueError):handler.redirect_request(req,None,302,'',{},url)
-    def test_token_precedence_and_missing_login(self):
+    def test_token_precedence_and_no_login_means_no_token(self):
         with patch.dict(os.environ,{'GH_TOKEN':'first','GITHUB_TOKEN':'second'}),patch.object(update.subprocess,'run') as run:
             self.assertEqual(update.github_token(),'first');run.assert_not_called()
         with patch.dict(os.environ,{},clear=True),patch.object(update.shutil,'which',return_value=None):
-            with self.assertRaisesRegex(ValueError,'login'):update.github_token()
+            self.assertIsNone(update.github_token())   # FEAT-004: a public release no longer needs a login
+    def test_public_release_is_read_anonymously_and_the_token_is_still_used_when_present(self):
+        seen=[]
+        class Response:
+            def __enter__(inner):return inner
+            def __exit__(inner,*exc):return False
+            def read(inner,limit):return b'{}'
+        for token,expected in ((None,False),('test-token',True)):
+            client=update.GitHub(token)
+            with patch.object(client.opener,'open',side_effect=lambda request,timeout:(seen.append(request),Response())[1]):client.read('/releases/latest',100)
+            self.assertEqual(seen[-1].has_header('Authorization'),expected)
+        with patch.object(update,'github_token',return_value=None),patch.object(update,'GitHub',return_value=self.client) as built:
+            update.perform(self.dest,check=True,say=lambda msg:None)
+        built.assert_called_once_with(None)
+    def test_anonymous_errors_point_to_login_and_do_not_blame_a_token(self):
+        client=update.GitHub()
+        for code,words in ((404,'privat'),(403,'60 permintaan'),(401,'60 permintaan')):
+            with patch.object(client.opener,'open',side_effect=update.urllib.error.HTTPError('https://api.github.com',code,'test',{},None)):
+                with self.assertRaisesRegex(ValueError,words) as result:client.read('/releases/latest',100)
+                self.assertIn('gh auth login',str(result.exception))
+    def test_state_cleanup_keeps_recent_and_referenced_state_and_never_touches_media_or_archive(self):
+        state=self.dest/'.state'
+        for n in (100,200,300,400,500):
+            (state/'program-backups'/('v3.1.1-%d'%n)).mkdir(parents=True);(state/'program-backups'/('v3.1.1-%d'%n)/'f').write_bytes(b'x'*n)
+        for stamp in ('20260101-235959','20260201-000001','20260301-120000'):(state/('venv-before-move-'+stamp)).mkdir()
+        (state/'archive-removed').mkdir()
+        for n in (9,10,11):(state/'archive-removed'/('archive-removed-%d.txt'%n)).write_text('twitter_1_1\n')
+        (state/'pip-cache').mkdir();(state/'pip-cache/wheel').write_bytes(b'c'*10);(state/'layout-backups/1').mkdir(parents=True)
+        (state/'downloaded.sqlite3').write_bytes(b'archive sentinel');(self.dest/'media').mkdir();(self.dest/'media/saved.jpg').write_bytes(b'media sentinel')
+        (state/'last-update.json').write_text(json.dumps({'backup':str(state/'program-backups/v3.1.1-100')}))
+        before=sorted(str(p) for p in self.dest.rglob('*'))
+        rows={row['label']:row for row in maintenance.state_cleanup(self.dest,keep=2)}
+        self.assertEqual(sorted(str(p) for p in self.dest.rglob('*')),before)   # a plan alone changes nothing
+        self.assertEqual([rows['program-backups'][k] for k in ('removed','kept','bytes')],[2,3,500])   # 500,400 newest + 100 referenced
+        self.assertEqual([rows['venv-before-move'][k] for k in ('removed','kept')],[1,2])
+        self.assertEqual([rows['archive-removed'][k] for k in ('removed','kept')],[1,2])               # 9 goes, 10 and 11 stay (numeric order)
+        self.assertEqual([rows['pip-cache'][k] for k in ('removed','bytes')],[1,10])
+        self.assertEqual([rows['layout-backups'][k] for k in ('removed','kept')],[0,1])
+        maintenance.state_cleanup(self.dest,keep=2,apply=True)
+        names=lambda pattern:sorted(p.name for p in state.glob(pattern))
+        self.assertEqual(names('program-backups/*'),['v3.1.1-100','v3.1.1-400','v3.1.1-500'])
+        self.assertEqual(names('venv-before-move-*'),['venv-before-move-20260201-000001','venv-before-move-20260301-120000'])
+        self.assertEqual(names('archive-removed/*'),['archive-removed-10.txt','archive-removed-11.txt'])
+        self.assertFalse((state/'pip-cache').exists());self.assertTrue((state/'layout-backups/1').exists())
+        self.assertEqual((state/'downloaded.sqlite3').read_bytes(),b'archive sentinel');self.assertEqual((self.dest/'media/saved.jpg').read_bytes(),b'media sentinel')
+        maintenance.state_cleanup(self.dest,keep=0,apply=True)
+        self.assertEqual(names('program-backups/*'),['v3.1.1-100'])   # keep 0 still spares the backup rollback needs
+    def test_state_cleanup_leaves_backups_alone_while_an_update_is_unfinished_and_skips_symlinks(self):
+        state=self.dest/'.state'
+        for n in (1,2,3):(state/'program-backups'/('v3.1.1-%d'%n)).mkdir(parents=True)
+        (state/'update-transaction.json').write_text(json.dumps({'status':'recovery_required','backup':str(state/'program-backups/v3.1.1-1')}))
+        row,*_=maintenance.state_cleanup(self.dest,keep=0,apply=True)
+        self.assertEqual((row['removed'],row['kept']),(0,3));self.assertIn('belum pulih',row['note'])
+        self.assertEqual(len(list((state/'program-backups').iterdir())),3)
+        (state/'update-transaction.json').unlink();outside=self.root/'outside';outside.mkdir();(outside/'keep.txt').write_text('x')
+        (state/'program-backups/v3.1.1-999').symlink_to(outside,target_is_directory=True)
+        maintenance.state_cleanup(self.dest,keep=0,apply=True)
+        self.assertTrue((outside/'keep.txt').exists());self.assertTrue((state/'program-backups/v3.1.1-999').is_symlink())
     def test_invalid_token_is_rejected_without_exposing_credential(self):
         for token in ('secret\ncredential','secret credential','secret\x00credential'):
             with self.assertRaises(ValueError) as result:update.GitHub(token)
             self.assertNotIn('secret',str(result.exception));self.assertNotIn('credential',str(result.exception))
+    def test_setup_refuses_python_outside_the_range_declared_in_release_json(self):
+        # AUD-006: the range comes from release.json, for a fresh install and for an existing environment alike.
+        tool=self.root/'tool';tool.mkdir();shutil.copy2(BASE/'setup.sh',tool/'setup.sh')
+        here=sys.version_info[:2];meta=json.loads((BASE/'release.json').read_text(encoding='utf-8'))
+        meta['python_min'],meta['python_max']='%d.%d'%(here[0],here[1]+1),'%d.%d'%(here[0],here[1]+2)
+        (tool/'release.json').write_text(json.dumps(meta),encoding='utf-8')
+        shim=self.root/'shim';shim.mkdir();(shim/'python3').symlink_to(sys.executable)
+        env={**os.environ,'PATH':str(shim)+os.pathsep+os.environ['PATH']}
+        fresh=subprocess.run(['bash',str(tool/'setup.sh')],env=env,capture_output=True,text=True,timeout=60)
+        self.assertEqual(fresh.returncode,1,fresh.stderr)
+        self.assertIn('Python %d.%d tidak didukung'%here,fresh.stderr);self.assertIn('%d.%d sampai %d.%d'%(here[0],here[1]+1,here[0],here[1]+2),fresh.stderr)
+        self.assertFalse((tool/'.venv').exists())          # refused before a virtualenv was made
+        (tool/'.venv/bin').mkdir(parents=True);(tool/'.venv/bin/python').symlink_to(sys.executable);(tool/'.venv/.tool-location').write_text(str(tool)+'\n')
+        existing=subprocess.run(['bash',str(tool/'setup.sh'),'--check'],env=env,capture_output=True,text=True,timeout=60)
+        self.assertEqual(existing.returncode,1,existing.stderr);self.assertIn('tidak didukung',existing.stderr)
+    def test_release_files_are_accepted_by_the_previous_updater(self):
+        # An installed copy runs ITS OWN (previous) updater against a new package, so a new kind of file would make `update`
+        # fail on every existing install. This is that updater's rule, frozen from 3.1.1. Changing it needs two releases:
+        # first teach valid_program_path the new name, then ship the file; and then this rule moves with it.
+        def accepted(name):
+            parts=PurePosixPath(name).parts
+            if len(parts)==1:return name in ('x-bookmarks','.gitignore','gallery-dl.json','settings.example.json','release.json','requirements.txt') or Path(name).suffix in ('.py','.sh','.md','.svg')
+            if parts[0]=='tests':return Path(name).suffix in ('.py','.json') and not any(p.startswith('.') for p in parts[1:])
+            if parts[0]=='.bootstrap':return len(parts)==2 and (parts[1]=='SHA256SUMS' or re.fullmatch(r'pip-[\d.]+-py3-none-any\.whl',parts[1]) is not None)
+            return len(parts)==3 and parts[:2]==('.github','workflows') and Path(name).suffix in ('.yml','.yaml')
+        meta=json.loads((BASE/'release.json').read_text(encoding='utf-8'))
+        self.assertEqual([name for name in meta['files'] if not accepted(name)],[])
     def test_unsafe_zip_private_files_symlink_and_duplicate_names(self):
         for i,name in enumerate(('x-bookmarks/../escape','/x-bookmarks/app.py','x-bookmarks/settings.json','x-bookmarks/.state/private','x-bookmarks/tests/../../escape','x-bookmarks/a\\b.py','x-bookmarks/.venv/private')):
             archive=self.root/'bad.zip'
@@ -170,7 +254,8 @@ def install(source,root):
     time.sleep(.7)
     original_install(source,root)
 if __name__=='__main__':sys.exit(main())"""
-        (self.source/'release_tools.py').write_text(script.replace("if __name__=='__main__':sys.exit(main())",replacement))
+        tail="if __name__ == '__main__':\n    sys.exit(main())";self.assertIn(tail,script)  # formatted entry point; a silent no-op would hide this test
+        (self.source/'release_tools.py').write_text(script.replace(tail,replacement))
         with subprocess.Popen(['bash',str(self.source/'update.sh'),str(self.dest)],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True) as p:
             deadline=time.monotonic()+10
             while not(self.dest/'.state/started').exists() and time.monotonic()<deadline:time.sleep(.02)

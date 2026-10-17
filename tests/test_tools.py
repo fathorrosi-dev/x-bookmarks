@@ -1,11 +1,11 @@
 """Local regression suite. Run: .venv/bin/python -m unittest discover -s tests -v"""
-import argparse
-from contextlib import closing, redirect_stderr
+from contextlib import closing, redirect_stderr, redirect_stdout
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import io
 import json
 import os
+import re
 import pty
 import select
 import signal
@@ -16,6 +16,7 @@ import sys
 import tempfile
 import threading
 import time
+import types
 import unittest
 from unittest.mock import patch
 
@@ -24,9 +25,8 @@ sys.path.insert(0, str(BASE))
 import bookmarks as tool
 import cli_ui
 from media_layout import PHOTO, VIDEO, is_partial, media_files, media_kind, organize
-from gallery_worker import Events
 
-SETTINGS = json.loads((BASE / 'settings.example.json').read_text())
+SETTINGS = json.loads((BASE / 'settings.example.json').read_text(encoding='utf-8'))
 
 class Capture:
     def __init__(self): self.events=[]
@@ -329,6 +329,8 @@ class Tests(unittest.TestCase):
         master, slave = pty.openpty()
         env = {**os.environ, 'TERM': 'xterm-256color'}
         env.pop('NO_COLOR', None)
+        env.pop('COLORFGBG', None)
+        env['X_BOOKMARKS_THEME'] = 'dark'        # the host terminal's theme must not change what these tests see
         if no_color:
             env['NO_COLOR'] = '1'
         env.update(env_extra or {})
@@ -461,10 +463,14 @@ class Tests(unittest.TestCase):
     def interactive_ui(self, width=80):
         """A UI that takes the terminal code path but writes into a string."""
         from rich.console import Console
-        with patch.dict(os.environ, {'TERM': 'xterm-256color'}):
-            ui = cli_ui.UI(plain=True)
+        # TERM stays pinned for the whole test: UI.unicode reads it lazily, so a linux/dumb host TERM would flip glyphs.
+        patcher = patch.dict(os.environ, {'TERM': 'xterm-256color'})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        ui = cli_ui.UI(plain=True)
         ui.interactive = True
         ui.console = Console(file=io.StringIO(), width=width, force_terminal=True, color_system=None, highlight=False)
+        ui.data_console = ui.console              # one buffer for both streams keeps these layout tests readable
         return ui, ui.console.file
 
     def test_symbols_are_one_cell_and_text_fallback_stays_aligned(self):
@@ -610,7 +616,7 @@ class Tests(unittest.TestCase):
         for expected in ('✓ Paket', '▲ Snapshot', '▸ Alat', '~/tools/x', '╭', 'Status alat'):
             self.assertIn(expected, text)
         buffer = io.StringIO()
-        with redirect_stderr(buffer):
+        with redirect_stdout(buffer):                 # results go to stdout
             plain = cli_ui.UI(plain=True)
             plain.checklist('Status alat', [('ok', 'Paket', 'gallery-dl 1.0'), ('warn', 'Snapshot', 'belum ada')])
         self.assertEqual(buffer.getvalue().splitlines(), ['Informasi | Nilai', 'Paket | gallery-dl 1.0', 'Snapshot | belum ada'])
@@ -652,9 +658,528 @@ class Tests(unittest.TestCase):
                 self.assertIn('! GAGAL · ' + expected, result.stderr)
                 self.assertNotIn('Errno', result.stderr)
 
+    def test_text_files_are_utf8_whatever_the_locale(self):
+        # AUD-005: ASCII locale and no UTF-8 mode; non-ASCII tweets must still round-trip through our own files.
+        script = ('import json,sys\nfrom pathlib import Path\n'
+                  f'sys.path.insert(0,{str(BASE)!r})\n'
+                  'import bookmarks as tool, cli_ui\n'
+                  'tool.UI_INSTANCE=cli_ui.UI(plain=True)\n'
+                  'root=Path(sys.argv[1])\n'
+                  'post={"tweet_id":1,"conversation_id":1,"author":{"id":7,"name":"kopi"},'
+                  '"date_bookmarked":"2026-09-01 00:00:00","content":"\\u65e5\\u672c\\u8a9e \\U0001f600 caf\\u00e9"}\n'
+                  'tool.write_json(root/"bookmarks.json",[[2,post]])\n'
+                  'settings=json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))\n'
+                  'dest=tool.create_selection(settings,root)\n'
+                  'manifest=json.loads((dest/"selection.json").read_text(encoding="utf-8"))\n'
+                  'print(manifest["selected_bookmarks"][0]["content"].encode("unicode_escape").decode())\n'
+                  'print((dest/"daftar-bookmark.csv").read_text(encoding="utf-8").encode("unicode_escape").decode())\n')
+        settings = self.root/'settings.json'
+        settings.write_text(json.dumps(SETTINGS), encoding='utf-8')
+        env = {**os.environ, 'PYTHONUTF8': '0', 'PYTHONCOERCECLOCALE': '0', 'LC_ALL': 'C', 'TERM': 'xterm-256color'}
+        env.pop('PYTHONIOENCODING', None)
+        probe = self.root/'probe.py'
+        probe.write_text(script, encoding='utf-8')
+        result = subprocess.run([sys.executable, str(probe), str(self.state), str(settings)], env=env,
+                                capture_output=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr.decode('utf-8', 'replace'))
+        expected = '\u65e5\u672c\u8a9e \U0001f600 caf\u00e9'.encode('unicode_escape').decode()
+        lines = result.stdout.decode('ascii').splitlines()
+        self.assertEqual(lines[0], expected)
+        self.assertIn(expected, lines[1])
+
+    # ----- AUD-001: the orchestration around the worker, run against local fixture jobs only -----
+    def orchestrate(self, modes, seen=None):
+        """Real download() with fixture jobs. modes maps conversation_id -> fixture mode; returns (dest, call)."""
+        dest = self.state/'selections'/tool.range_key(SETTINGS)
+        dest.mkdir(parents=True)
+        threads = [{'conversation_id': cid, 'author_ids': ['42'], 'bookmarks': []} for cid in modes]
+        (dest/'selection.json').write_text(json.dumps({
+            'start': SETTINGS['start'], 'end_inclusive': SETTINGS['end'], 'timezone': SETTINGS['timezone'],
+            'threads': threads, 'selected_bookmarks': []}), encoding='utf-8')
+
+        def fixture_args(settings, options):
+            if seen is not None:
+                seen.append(options)
+            return self.command(modes[options[-1].rsplit('/', 1)[1]])
+
+        def call(limit=None, all_authors=False, run_gallery=None, reconcile=False):
+            args = types.SimpleNamespace(limit=limit, all_authors=all_authors, reconcile=reconcile)
+            with patch.object(tool, 'BASE', self.root), patch.object(tool, 'STATE', self.state), \
+                    patch.object(tool, 'MEDIA', self.media), patch.object(tool, 'gallery_args', fixture_args), \
+                    patch.object(tool, 'run_gallery', run_gallery or tool.run_gallery), redirect_stderr(io.StringIO()):
+                return tool.download(SETTINGS, dest, args, ui=cli_ui.UI(plain=True))
+        return dest, call
+
+    def last_run(self, dest, mode='bookmarked-authors'):
+        return json.loads((dest/f'last-run-{mode}.json').read_text(encoding='utf-8'))
+
+    def test_download_runs_every_thread_and_reports_the_last_run(self):
+        seen = []
+        dest, call = self.orchestrate({'1000': 'mix', '2000': 'mix'}, seen)
+        call()
+        report = self.last_run(dest)
+        self.assertEqual((report['attempted_threads'], report['completed_threads'], report['failed_threads']), (2, 2, []))
+        self.assertEqual((report['downloaded_photos'], report['downloaded_videos'], report['skipped_files']), (2, 2, 4))
+        self.assertFalse(report['interrupted'])
+        first = seen[0]                                   # the command line built for the first thread
+        self.assertEqual(first[first.index('--post-filter') + 1],
+                         tool.thread_filter({'conversation_id': '1000', 'author_ids': ['42']}))
+        self.assertEqual(first[first.index('--download-archive') + 1], str(self.state/'downloaded.sqlite3'))
+        self.assertIn('conversations=true', first)
+        self.assertEqual(first[-1], 'https://x.com/i/web/status/1000')
+        call(all_authors=True)                            # other mode: its own report, filter loses the author clause
+        self.assertTrue((dest/'last-run-all-authors.json').exists())
+        self.assertEqual(seen[-1][seen[-1].index('--post-filter') + 1], 'conversation_id == 2000')
+
+    def test_download_limit_counts_threads_not_files(self):
+        dest, call = self.orchestrate({'1000': 'mix', '2000': 'mix', '3000': 'mix'})
+        call(limit=1)
+        report = self.last_run(dest)
+        self.assertEqual((report['attempted_threads'], report['completed_threads']), (1, 1))
+        self.assertEqual(len(list(media_files(self.media))), 4)
+
+    def test_download_continues_after_a_failed_thread_and_then_reports_the_error(self):
+        dest, call = self.orchestrate({'1111': 'crash', '2222': 'mix'})
+        with self.assertRaisesRegex(ValueError, '1 utas mengalami error'):
+            call()
+        report = self.last_run(dest)
+        self.assertEqual(report['completed_threads'], 2)
+        self.assertEqual([item['conversation_id'] for item in report['failed_threads']], ['1111'])
+        self.assertEqual(len(list(media_files(self.media))), 4)   # the second thread still downloaded
+
+    def test_download_interrupt_propagates_and_is_recorded(self):
+        dest, call = self.orchestrate({'1000': 'mix', '2000': 'mix'})
+        real, calls = tool.run_gallery, []
+
+        def interrupting(*args, **kwargs):
+            calls.append(1)
+            if len(calls) == 2:
+                raise KeyboardInterrupt
+            return real(*args, **kwargs)
+        with self.assertRaises(KeyboardInterrupt):
+            call(run_gallery=interrupting)
+        report = self.last_run(dest)
+        self.assertTrue(report['interrupted'])
+        self.assertEqual((report['attempted_threads'], report['completed_threads']), (2, 1))
+
+    def test_download_refuses_bad_manifest_and_legacy_media_at_the_root(self):
+        dest, call = self.orchestrate({'1000': 'mix'})
+        (self.media/'old.jpg').write_bytes(b'legacy')
+        with self.assertRaisesRegex(ValueError, 'organize'):
+            call()
+        (self.media/'old.jpg').unlink()
+        manifest = json.loads((dest/'selection.json').read_text(encoding='utf-8'))
+        manifest['end_inclusive'] = '2000-01-01'
+        (dest/'selection.json').write_text(json.dumps(manifest), encoding='utf-8')
+        with self.assertRaisesRegex(ValueError, 'Rentang manifest berbeda'):
+            call()
+        (dest/'selection.json').unlink()
+        with self.assertRaisesRegex(ValueError, 'Belum ada daftar terpilih'):
+            call()
+
+    def test_extract_keeps_the_previous_snapshot_unless_the_scan_is_complete(self):
+        snapshot = self.state/'bookmarks.json'
+        snapshot.write_text('PREVIOUS', encoding='utf-8')
+        mode = {'value': 'scanbad'}
+
+        def fixture_args(settings, options):
+            return self.command(mode['value'], '--dump-json', '-o', 'output.jsonl=false')
+        with patch.object(tool, 'BASE', self.root), patch.object(tool, 'STATE', self.state), \
+                patch.object(tool, 'gallery_args', fixture_args), redirect_stderr(io.StringIO()):
+            with self.assertRaisesRegex(ValueError, 'Scan gagal'):
+                tool.extract(SETTINGS, snapshot)
+            self.assertEqual(snapshot.read_text(encoding='utf-8'), 'PREVIOUS')
+            mode['value'] = 'wait'
+            posts = tool.extract(SETTINGS, snapshot)
+        self.assertEqual(len(posts), 4)
+        self.assertEqual(len(list(tool.directory_posts(snapshot))), 4)
+        self.assertFalse(snapshot.with_name('bookmarks.json.partial').exists())
+
+    def test_resolve_browser_picks_the_single_firefox_profile_with_an_x_session(self):
+        home = self.root/'home'
+        root = home/'.mozilla/firefox'
+
+        def profile(name, cookies):
+            folder = root/name
+            folder.mkdir(parents=True)
+            with closing(sqlite3.connect(folder/'cookies.sqlite')) as con, con:
+                con.execute('CREATE TABLE moz_cookies (host TEXT, name TEXT)')
+                con.executemany('INSERT INTO moz_cookies VALUES (?, ?)', cookies)
+            return folder
+        with patch.object(tool, 'STATE', self.state), patch.object(tool.Path, 'home', return_value=home), \
+                redirect_stderr(io.StringIO()), patch('builtins.print'):
+            self.assertEqual(tool.resolve_browser('chrome'), 'chrome')        # only 'firefox' is resolved
+            with self.assertRaisesRegex(ValueError, 'Sesi X tidak ditemukan'):
+                tool.resolve_browser('firefox')                                # no profile folder at all
+            blank = profile('blank.default', [('.example.com', 'sid')])
+            with self.assertRaisesRegex(ValueError, 'Sesi X tidak ditemukan'):
+                tool.resolve_browser('firefox')                                # a profile, but no X session
+            target = profile('main.default', [('.x.com', 'auth_token'), ('.example.com', 'sid')])
+            before = (target/'cookies.sqlite').read_bytes()
+            self.assertEqual(tool.resolve_browser('firefox'), f'firefox/.x.com:{target}')
+            self.assertEqual((target/'cookies.sqlite').read_bytes(), before)  # the real cookie jar is never touched
+            self.assertEqual(list(self.state.iterdir()), [])                   # and no copy of it is left behind
+            other = profile('work.default', [('x.com', 'auth_token')])
+            with self.assertRaisesRegex(ValueError, 'Beberapa profil') as raised:
+                tool.resolve_browser('firefox')
+            self.assertIn(str(target), str(raised.exception))
+            self.assertIn(str(other), str(raised.exception))
+            self.assertNotIn(str(blank), str(raised.exception))
+
+    # ----- AUD-003: read-only commands are not blocked by a running download -----
+    def isolated_tool(self):
+        for name in ('bookmarks.py', 'cli_ui.py', 'media_layout.py'):
+            (self.root/name).write_bytes((BASE/name).read_bytes())
+        (self.root/'settings.json').write_bytes((BASE/'settings.example.json').read_bytes())
+
+    def run_cli(self, *args, plain=True):
+        env = {**os.environ, 'TERM': 'xterm-256color'}
+        return subprocess.run([sys.executable, str(self.root/'bookmarks.py'), *args, *(['--plain'] if plain else [])],
+                              cwd=self.root, env=env, capture_output=True, text=True, timeout=30)
+
+    def sample_post(self, tweet_id=10, **extra):
+        return {'tweet_id': tweet_id, 'conversation_id': tweet_id, 'author': {'id': 7, 'name': 'kopi'},
+                'date_bookmarked': '2026-09-01 00:00:00', 'content': 'halo', **extra}
+
+    def test_read_only_commands_ignore_the_run_lock_but_mutating_ones_respect_it(self):
+        import fcntl
+        self.isolated_tool()
+        with (self.state/'run.lock').open('a') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)        # what a long download holds
+            status = self.run_cli('status')
+            self.assertEqual(status.returncode, 0, status.stderr)
+            listing = self.run_cli('list')                          # gets past the lock; no selection exists yet
+            self.assertNotIn('Proses lain', listing.stderr)
+            self.assertIn('Belum ada pilihan', listing.stderr)
+            for action in ('select', 'scan', 'check', 'download', 'organize'):
+                result = self.run_cli(action)
+                self.assertEqual(result.returncode, 1, (action, result.stderr))
+                self.assertIn('Proses lain masih berjalan', result.stderr, action)
+
+    # ----- AUD-002: a mass of "missing" files is not silently turned into a mass re-download -----
+    def seed_archive(self, total, with_files):
+        db = self.state/'downloaded.sqlite3'
+        (self.media/'photo').mkdir(exist_ok=True)
+        for leftover in (self.media/'photo').iterdir():          # every scenario starts from an empty collection
+            leftover.unlink()
+        with closing(sqlite3.connect(db)) as con, con:
+            con.execute('CREATE TABLE archive (entry TEXT PRIMARY KEY)')
+            con.executemany('INSERT INTO archive VALUES (?)', [(f'twitter_{5000+i}_1',) for i in range(total)])
+        for i in range(with_files):
+            (self.media/'photo'/f'2020_a_1000_{5000+i}_1.jpg').write_bytes(b'x')
+        return db
+
+    def archive_entries(self, db):
+        with closing(sqlite3.connect(db)) as con:
+            return {row[0] for row in con.execute('SELECT entry FROM archive')}
+
+    def test_reconcile_stops_for_a_mass_of_missing_files_and_can_be_forced_with_a_backup(self):
+        db = self.seed_archive(100, 40)                             # 60 missing = 60% of the archive
+        with self.assertRaisesRegex(ValueError, r'60 dari 100 entri arsip \(60%\).*--reconcile'):
+            tool.reconcile_archive(db, self.media)
+        self.assertEqual(len(self.archive_entries(db)), 100)        # nothing was removed
+        removed = self.state/'archive-removed'
+        self.assertEqual(tool.reconcile_archive(db, self.media, force=True, backup_dir=removed), 60)
+        self.assertEqual(len(self.archive_entries(db)), 40)
+        backup, = removed.iterdir()
+        self.assertEqual(len(backup.read_text(encoding='utf-8').split()), 60)
+        self.assertIn('twitter_5099_1', backup.read_text(encoding='utf-8'))    # restorable: the exact entries are listed
+
+    def test_reconcile_stays_quiet_below_either_threshold(self):
+        db = self.seed_archive(100, 90)                             # 10 missing: below the absolute floor
+        self.assertEqual(tool.reconcile_archive(db, self.media, backup_dir=self.state/'archive-removed'), 10)
+        self.assertEqual(len(list((self.state/'archive-removed').iterdir())), 1)   # still backed up before removal
+        db.unlink()
+        db = self.seed_archive(10, 1)                               # 9 of 10 missing: high share, tiny archive
+        self.assertEqual(tool.reconcile_archive(db, self.media), 9)
+        db.unlink()
+        db = self.seed_archive(1000, 940)                           # 60 missing but only 6% of a big archive
+        self.assertEqual(tool.reconcile_archive(db, self.media), 60)
+
+    def test_download_needs_the_reconcile_flag_for_a_mass_of_missing_files(self):
+        dest, call = self.orchestrate({'1000': 'mix'})
+        db = self.seed_archive(100, 0)
+        with self.assertRaisesRegex(ValueError, '--reconcile'):
+            call()
+        self.assertEqual(len(self.archive_entries(db)), 100)
+        self.assertFalse((dest/'last-run-bookmarked-authors.json').exists())    # stopped before any thread ran
+        call(reconcile=True)
+        self.assertEqual(self.last_run(dest)['completed_threads'], 1)
+        self.assertEqual(len(list((self.state/'archive-removed').iterdir())), 1)
+
+    # ----- AUD-004: tweet text cannot turn into a spreadsheet formula -----
+    def test_csv_cells_that_look_like_formulas_stay_text(self):
+        import csv
+        texts = ['=1+1', '@user hai', '-5 derajat', '+62 811', 'biasa saja', 'a=b']
+        posts = [{'tweet_id': 10+i, 'conversation_id': 10+i, 'author': {'id': 7, 'name': '=cmd' if i == 0 else 'kopi'},
+                  'date_bookmarked': '2026-09-01 00:00:00', 'content': text} for i, text in enumerate(texts)]
+        tool.write_json(self.state/'bookmarks.json', [[2, post] for post in posts])
+        with patch.object(tool, 'UI_INSTANCE', cli_ui.UI(plain=True)), redirect_stderr(io.StringIO()):
+            dest = tool.create_selection(SETTINGS, self.state)
+        with (dest/'daftar-bookmark.csv').open(newline='', encoding='utf-8') as stream:
+            rows = list(csv.DictReader(stream))
+        self.assertEqual(sorted(row['content'] for row in rows),
+                         sorted(["'=1+1", "'@user hai", "'-5 derajat", "'+62 811", 'biasa saja', 'a=b']))
+        self.assertIn("'=cmd", {row['author_name'] for row in rows})
+        manifest = json.loads((dest/'selection.json').read_text(encoding='utf-8'))
+        self.assertEqual(sorted(item['content'] for item in manifest['selected_bookmarks']), sorted(texts))   # JSON stays untouched
+
+    # ----- UX-001: results on stdout, chatter on stderr -----
+    def test_results_go_to_stdout_and_chatter_to_stderr(self):
+        self.isolated_tool()
+        (self.root/'settings.json').write_text(json.dumps(SETTINGS), encoding='utf-8')
+        dest = self.state/'selections'/tool.range_key(SETTINGS)
+        dest.mkdir(parents=True)
+        item = {'bookmarked_at': '2026-09-01T07:00:00+07:00', 'author_name': 'kopi', 'url': 'https://x.com/i/web/status/10'}
+        (dest/'selection.json').write_text(json.dumps({'selected_bookmarks': [item], 'threads': [{}], 'snapshot_at': 'kemarin'}),
+                                           encoding='utf-8')
+        listing = self.run_cli('list')
+        self.assertEqual(listing.stdout.splitlines(), ['Tanggal bookmark | Penulis | URL',
+                                                       '2026-09-01T07:00:00+07:00 | @kopi | https://x.com/i/web/status/10'])
+        self.assertIn('X Bookmarks ·', listing.stderr)
+        self.assertIn('1 bookmark · 1 utas · snapshot kemarin', listing.stderr)
+        self.assertIn('Daftar lengkap', listing.stderr)
+        self.assertNotIn('Daftar lengkap', listing.stdout)
+        status = self.run_cli('status')
+        self.assertEqual(status.stdout.splitlines()[0], 'Informasi | Nilai')
+        self.assertIn(f'Versi | {tool.VERSION} ', status.stdout)
+        self.assertEqual(len(status.stderr.splitlines()), 1)             # only the heading
+        both = subprocess.run([sys.executable, str(self.root/'bookmarks.py'), 'list', '--plain'], cwd=self.root,
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=30,
+                              env={**os.environ, 'TERM': 'xterm-256color'}).stdout
+        self.assertIn('@kopi', both)                                     # `> file 2>&1` still captures everything
+        self.assertIn('Daftar lengkap', both)
+
+    # ----- UX-005: palette follows the terminal's background -----
+    def test_theme_detection_and_light_palette_contrast(self):
+        detect = cli_ui.detect_theme
+        self.assertEqual(detect({}), 'dark')
+        self.assertEqual([detect({'COLORFGBG': value}) for value in ('0;15', '0;default;15', '0;7', '15;0', '15;default;0', 'junk')],
+                         ['light', 'light', 'light', 'dark', 'dark', 'dark'])
+        self.assertEqual(detect({'X_BOOKMARKS_THEME': 'light', 'COLORFGBG': '15;0'}), 'light')   # explicit choice wins
+        self.assertEqual(detect({'X_BOOKMARKS_THEME': ' DARK ', 'COLORFGBG': '0;15'}), 'dark')
+        self.assertEqual(detect({'X_BOOKMARKS_THEME': 'neon'}), 'dark')
+
+        def luminance(color):
+            channels = [int(color[i:i+2], 16)/255 for i in (1, 3, 5)]
+            r, g, b = [c/12.92 if c <= 0.03928 else ((c + 0.055)/1.055)**2.4 for c in channels]
+            return 0.2126*r + 0.7152*g + 0.0722*b
+
+        def contrast(a, b):
+            high, low = sorted((luminance(a), luminance(b)), reverse=True)
+            return (high + 0.05)/(low + 0.05)
+        light, dark = cli_ui.PALETTES['light'], cli_ui.PALETTES['dark']
+        for background in ('#FFFFFF', '#FAFAFA'):
+            for name, color in light.items():
+                if name != 'empty':                                      # the bar track is meant to stay quiet
+                    self.assertGreaterEqual(contrast(color, background), 4.5, (name, background))
+        for name, color in dark.items():
+            if name != 'empty':
+                self.assertGreaterEqual(contrast(color, '#0D1117'), 4.5, name)
+        self.assertEqual((dark['pink'], dark['red'], dark['blue'], dark['file']), ('#FFC2D4', '#E8384F', '#A8D8F0', '#E8384F'))
+        self.assertNotIn(light['file'], (light['red'], light['pink']))   # in the light palette red means failure only
+
+    def test_light_theme_reaches_the_terminal(self):
+        output = self.terminal_demo(env_extra={'X_BOOKMARKS_THEME': 'light'})
+        self.assertIn('38;2;180;50;94', output)                          # light pink
+        self.assertIn('38;2;14;116;144', output)                         # the file bar's own accent
+        self.assertNotIn('38;2;255;194;212', output)
+        self.assertNotIn('38;2;232;56;79', output)
+
+    # ----- UX-002 / UX-003: one parser per action, --version, an epilog with the usual workflow -----
+    def test_version_help_and_per_action_flags(self):
+        self.isolated_tool()
+        version = self.run_cli('--version', plain=False)
+        self.assertEqual((version.returncode, version.stdout.strip()), (0, f'x-bookmarks {tool.VERSION}'))
+        overview = self.run_cli('--help', plain=False).stdout
+        for step in ('./x-bookmarks status', './x-bookmarks scan', './x-bookmarks download --limit 3', 'ke stdout'):
+            self.assertIn(step, overview)
+        listing, download = (self.run_cli(action, '--help', plain=False).stdout for action in ('list', 'download'))
+        self.assertTrue(all(flag in listing for flag in ('--limit', '--json', '--start')))
+        self.assertTrue(all(flag not in listing for flag in ('--all-authors', '--reconcile')))
+        self.assertTrue(all(flag in download for flag in ('--limit', '--all-authors', '--reconcile')))
+        self.assertNotIn('--json', download)
+        for argv in (['scan', '--limit', '1'], ['list', '--all-authors'], ['status', '--reconcile'], ['download', '--json'],
+                     ['clean', '--start', '2026-01-01'], ['list', '--limit', '0'], ['clean', '--keep', '-1'],
+                     ['update', '--limit', '1'], ['status', '--check'], []):
+            self.assertEqual(self.run_cli(*argv, plain=False).returncode, 2, argv)
+
+    def test_range_options_work_before_and_after_the_action(self):
+        self.isolated_tool()
+        (self.root/'settings.json').write_text(json.dumps(SETTINGS), encoding='utf-8')
+        for argv in (['--start', '2026-01-01', '--end', '2026-01-31', 'status'], ['status', '--start', '2026-01-01', '--end', '2026-01-31'],
+                     ['--start', '2026-01-01', 'status', '--end', '2026-01-31']):
+            result = self.run_cli(*argv)
+            self.assertEqual(result.returncode, 0, (argv, result.stderr))
+            self.assertIn('2026-01-01–2026-01-31', result.stderr, argv)
+        self.assertEqual(self.run_cli('--plain', 'status', plain=False).returncode, 0)
+
+    def test_next_step_hint_repeats_the_range_and_quotes_the_browser_and_bad_ids_are_explained(self):
+        self.isolated_tool()
+        (self.root/'settings.json').write_text(json.dumps(SETTINGS), encoding='utf-8')
+        tool.write_json(self.state/'bookmarks.json', [[2, self.sample_post()]])
+        result = self.run_cli('select', '--browser', 'firefox/.x.com:/a b')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"Berikutnya: ./x-bookmarks list --limit 10 --start {SETTINGS['start']} --end {SETTINGS['end']} "
+                      "--browser 'firefox/.x.com:/a b'", result.stderr)
+        self.assertNotIn('Berikutnya', result.stdout)
+        tool.write_json(self.state/'bookmarks.json', [[2, self.sample_post(tweet_id='abc')]])      # UX-004
+        bad = self.run_cli('select')
+        self.assertEqual(bad.returncode, 1)
+        self.assertIn('tweet_id tidak valid pada tweet abc', bad.stderr)
+        self.assertNotIn('invalid literal', bad.stderr)
+
+    # ----- FEAT-003: --json, schema locked by this test -----
+    def test_json_output_is_the_only_thing_on_stdout_and_its_schema_is_stable(self):
+        self.isolated_tool()
+        (self.root/'settings.json').write_text(json.dumps(SETTINGS), encoding='utf-8')
+        status = json.loads(self.run_cli('status', '--json').stdout)
+        self.assertEqual(sorted(status), sorted(['schema', 'version', 'python', 'packages', 'packages_ready', 'tool', 'state_dir',
+                                                 'photo_dir', 'video_dir', 'browser', 'snapshot', 'media', 'last_run']))
+        self.assertEqual((status['schema'], status['version'], status['snapshot'], status['last_run']), (1, tool.VERSION, None, None))
+        self.assertEqual(sorted(status['media']), ['at_root', 'partial', 'photos', 'videos'])
+        self.assertEqual(sorted(status['packages']), ['gallery-dl', 'rich'])
+        dest = self.state/'selections'/tool.range_key(SETTINGS)
+        dest.mkdir(parents=True)
+        items = [{'bookmarked_at': f'2026-09-0{n}T07:00:00+07:00', 'author_name': 'kopi', 'url': f'https://x.com/i/web/status/{n}',
+                  'content': 'caf\u00e9 \U0001f600'} for n in (1, 2, 3)]
+        (dest/'selection.json').write_text(json.dumps({'selected_bookmarks': items, 'threads': [{}, {}], 'snapshot_at': 'kemarin'}), encoding='utf-8')
+        everything = self.run_cli('list', '--json')
+        data = json.loads(everything.stdout)
+        self.assertEqual(sorted(data), ['bookmarks', 'range', 'schema', 'snapshot_at', 'total_bookmarks', 'total_threads'])
+        self.assertEqual((len(data['bookmarks']), data['total_bookmarks'], data['total_threads']), (3, 3, 2))
+        self.assertEqual(data['bookmarks'][0]['content'], 'caf\u00e9 \U0001f600')
+        self.assertTrue(everything.stdout.isascii())                       # valid whatever the locale
+        self.assertEqual(len(json.loads(self.run_cli('list', '--json', '--limit', '2').stdout)['bookmarks']), 2)
+        self.assertNotIn('Tanggal bookmark', everything.stdout)
+
+    def test_check_json_lists_the_samples_and_still_hints_on_stderr(self):
+        out, err = io.StringIO(), io.StringIO()
+        with patch.object(sys, 'argv', ['bookmarks.py', 'check', '--json']), patch.object(tool, 'load_settings', return_value=dict(SETTINGS)), \
+                patch.object(tool, 'resolve_browser', side_effect=lambda value: value), patch.object(tool, 'extract', return_value=[self.sample_post(55)]), \
+                patch.object(tool, 'STATE', self.state), patch.object(tool, 'MEDIA', self.media), patch.object(tool, 'UI_INSTANCE', None), \
+                redirect_stdout(out), redirect_stderr(err):
+            self.assertFalse(tool.main())
+        data = json.loads(out.getvalue())
+        self.assertEqual(sorted(data), ['samples', 'schema'])
+        self.assertEqual(data['samples'], [{'bookmarked_at': '2026-09-01T07:00:00+07:00', 'author_name': 'kopi', 'url': 'https://x.com/i/web/status/55'}])
+        self.assertIn('Berikutnya: ./x-bookmarks scan', err.getvalue())
+
+    # ----- FEAT-001: status shows the last download of the active range -----
+    def test_status_shows_the_last_run_of_the_active_range(self):
+        ui = cli_ui.UI(plain=True)
+
+        def status_output(**kwargs):
+            buffer = io.StringIO()
+            with patch.object(tool, 'STATE', self.state), patch.object(tool, 'MEDIA', self.media), patch.object(tool, 'UI_INSTANCE', ui), \
+                    redirect_stdout(buffer):
+                tool.status(SETTINGS, **kwargs)
+            return buffer.getvalue()
+        self.assertIn('Run terakhir | belum ada untuk rentang ini', status_output())
+        dest, call = self.orchestrate({'1000': 'mix', '2000': 'mix'})
+        call()
+        self.assertRegex(status_output(), r'Run terakhir \| \d{4}-\d{2}-\d{2} \d{2}:\d{2} · 2/2 utas · 0 gagal · 2 foto · 2 video · 4 dilewati · mode bookmarked-authors')
+        self.assertEqual(json.loads(status_output(as_json=True))['last_run']['planned_threads'], 2)
+        newer = dest/'last-run-all-authors.json'                           # the newest report of any mode wins
+        newer.write_text(json.dumps({**self.last_run(dest), 'mode': 'all-authors', 'completed_threads': 1, 'planned_threads': 3,
+                                     'failed_threads': [{'conversation_id': '1', 'exit_code': 1}]}), encoding='utf-8')
+        os.utime(newer, (time.time() + 60,) * 2)
+        self.assertIn('1/3 utas · 1 gagal · 2 foto · 2 video · 4 dilewati · mode all-authors', status_output())
+        view, shown = self.interactive_ui(width=100)                        # the marker: ▲ when something needs attention
+        with patch.object(tool, 'STATE', self.state), patch.object(tool, 'MEDIA', self.media), patch.object(tool, 'UI_INSTANCE', view):
+            tool.status(SETTINGS)
+        self.assertIn('▲ Run terakhir', shown.getvalue())
+        newer.write_text(json.dumps({**self.last_run(dest), 'interrupted': True, 'failed_threads': []}), encoding='utf-8')
+        os.utime(newer, (time.time() + 90,) * 2)
+        self.assertIn('dihentikan', status_output())
+        newer.unlink()
+        view, shown = self.interactive_ui(width=100)
+        with patch.object(tool, 'STATE', self.state), patch.object(tool, 'MEDIA', self.media), patch.object(tool, 'UI_INSTANCE', view):
+            tool.status(SETTINGS)
+        self.assertIn('✓ Run terakhir', shown.getvalue())                  # a clean run is marked ok
+        newer.write_text('{"finished_at": "oops"}', encoding='utf-8')
+        os.utime(newer, (time.time() + 120,) * 2)
+        self.assertIn('Run terakhir | berkas last-run tidak terbaca', status_output())
+        newer.write_text('not json', encoding='utf-8')                     # unreadable JSON is skipped for the older report
+        self.assertIn('2/2 utas', status_output())
+
+    # ----- UX-004: an unexpected exception is one line for the user and a traceback in .state/crash.log -----
+    def test_unexpected_errors_are_one_line_with_the_traceback_in_a_private_log(self):
+        self.isolated_tool()
+        (self.root/'settings.json').write_text(json.dumps({**SETTINGS, 'timezone': 5}), encoding='utf-8')
+        result = self.run_cli('status')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('! GAGAL · Kesalahan tak terduga (TypeError', result.stderr)
+        self.assertIn('crash.log', result.stderr)
+        self.assertNotIn('Traceback', result.stderr)
+        log = self.state/'crash.log'
+        self.assertIn('Traceback', log.read_text(encoding='utf-8'))
+        self.assertIn("argv=['status', '--plain']", log.read_text(encoding='utf-8'))
+        self.assertEqual(log.stat().st_mode & 0o777, 0o600)
+
+    # ----- FEAT-002: clean -----
+    def test_clean_is_a_dry_run_until_yes_needs_no_settings_and_respects_the_lock(self):
+        import fcntl
+        self.isolated_tool()
+        (self.root/'release_tools.py').write_bytes((BASE/'release_tools.py').read_bytes())
+        (self.root/'settings.json').unlink()                                # maintenance must not depend on a valid setup
+        for n in (1, 2, 3):
+            (self.state/'program-backups'/f'v3.1.1-{n}').mkdir(parents=True)
+        dry = self.run_cli('clean', '--keep', '1')
+        self.assertEqual(dry.returncode, 0, dry.stderr)
+        self.assertEqual(dry.stdout.splitlines()[0], 'Kategori | Akan dihapus | Dipertahankan | Ukuran | Catatan')
+        self.assertIn('program-backups | 2 | 1 | 0 B', dry.stdout)
+        self.assertIn('Dry-run', dry.stderr)
+        self.assertEqual(len(list((self.state/'program-backups').iterdir())), 3)
+        done = self.run_cli('clean', '--keep', '1', '--yes')
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(done.stdout.splitlines()[0].split(' | ')[1], 'Dihapus')
+        self.assertEqual(sorted(p.name for p in (self.state/'program-backups').iterdir()), ['v3.1.1-3'])
+        with (self.state/'run.lock').open('a') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            busy = self.run_cli('clean', '--yes')
+        self.assertEqual(busy.returncode, 1)
+        self.assertIn('Proses lain masih berjalan', busy.stderr)
+
+    # ----- AUD-007: the dependencies of the direct pins are pinned too, in requirements.txt -----
+    def test_transitive_pins_cover_exactly_the_dependencies_of_the_direct_pins(self):
+        import importlib.metadata as md
+        canon = lambda name: re.sub(r'[-_.]+', '-', name).lower()
+        lines = [line.strip() for line in (BASE/'requirements.txt').read_text(encoding='utf-8').splitlines()
+                 if line.strip() and not line.startswith('#')]
+        self.assertTrue(all(re.fullmatch(r'[A-Za-z0-9._-]+==[0-9][A-Za-z0-9.]*', line) for line in lines), lines)
+        pins = {canon(name): version for name, _, version in (line.partition('==') for line in lines)}
+        self.assertEqual([canon(line.partition('==')[0]) for line in lines[:2]], ['gallery-dl', 'rich'])   # hand-chosen pins first
+        extra = {name: version for name, version in pins.items() if name not in ('gallery-dl', 'rich')}
+        for name, version in pins.items():
+            self.assertEqual(md.version(name), version, name)         # a stale or missing pin fails here
+        seen, todo = set(), ['gallery-dl', 'rich']
+        while todo:
+            for line in md.requires(todo.pop()) or []:
+                if 'extra ==' in line:
+                    continue
+                dependency = canon(re.match(r'[A-Za-z0-9._-]+', line)[0])
+                try:
+                    md.version(dependency)
+                except md.PackageNotFoundError:
+                    continue                                          # a marker kept it out of this interpreter
+                if dependency not in seen:
+                    seen.add(dependency)
+                    todo.append(dependency)
+        self.assertEqual(seen, set(extra))                            # nothing the pins pull in is left floating
+
+    # ----- DX-001: documents that name the version -----
+    def test_documents_name_the_release_version(self):
+        for name in ('README.md', 'PANDUAN.md', 'INSTALL-STATUS.md'):
+            title = (BASE/name).read_text(encoding='utf-8').splitlines()[0]
+            self.assertIn(tool.VERSION, title, name)
+        self.assertEqual(json.loads((BASE/'release.json').read_text(encoding='utf-8'))['version'], tool.VERSION)
+
     def test_dependency_pins_have_one_source(self):
         import gallery_worker
-        pins = dict(line.split('==') for line in (BASE/'requirements.txt').read_text().split())
+        lines = [line.strip() for line in (BASE/'requirements.txt').read_text(encoding='utf-8').splitlines()
+                 if line.strip() and not line.startswith('#')]
+        pins = {name: version for name, _, version in (line.partition('==') for line in lines[:2])}   # the two hand-chosen pins
         self.assertEqual(set(pins), {'gallery-dl', 'rich'})
         self.assertEqual(gallery_worker.pinned_version('gallery-dl'), pins['gallery-dl'])
         with self.assertRaises(ValueError):

@@ -1,0 +1,50 @@
+name: gallery-dl canary
+# Early warning, not a gate: runs the whole suite against the newest gallery-dl and rich (and the dependencies they pull in).
+# A red run means upgrade work is due (README, "Menaikkan gallery-dl atau Rich"). It never blocks or publishes a release.
+on:
+  schedule:
+    - cron: '17 3 * * 1'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  canary:
+    name: Newest gallery-dl and rich on Python 3.13
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    continue-on-error: true
+    env:
+      PYTHONUTF8: '1'
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.13'
+      - name: Resolve the newest releases in a scratch environment
+        run: |
+          python -m venv "$RUNNER_TEMP/probe"
+          "$RUNNER_TEMP/probe/bin/python" -m pip install --quiet --upgrade gallery-dl rich
+          "$RUNNER_TEMP/probe/bin/python" -m pip freeze > "$RUNNER_TEMP/freeze.txt"
+      - name: Point requirements.txt and the docs that quote the pins at those versions
+        run: |
+          python - "$RUNNER_TEMP/freeze.txt" <<'EOF'
+          import re, sys
+          from pathlib import Path
+          canon = lambda name: re.sub(r"[-_.]+", "-", name).lower()
+          frozen = {canon(name): (name, version) for name, version in (line.strip().split("==") for line in open(sys.argv[1]) if "==" in line)}
+          old = dict(line.strip().split("==") for line in open("requirements.txt") if "==" in line and not line.startswith("#") and canon(line.split("==")[0]) in ("gallery-dl", "rich"))
+          direct = ["gallery-dl", "rich"]
+          lines = [f"{name}=={frozen[name][1]}" for name in direct]
+          lines.append("# Dependencies of the two pins above (rewritten by the canary).")
+          lines += [f"{name}=={version}" for key, (name, version) in sorted(frozen.items()) if key not in direct + ["pip", "setuptools", "wheel"]]
+          Path("requirements.txt").write_text("\n".join(lines) + "\n")
+          for doc in ("README.md", "PANDUAN.md"):
+              text = Path(doc).read_text(encoding="utf-8")
+              for name in direct:
+                  text = text.replace(old[name], frozen[name][1])
+              Path(doc).write_text(text, encoding="utf-8")
+          EOF
+          git diff --stat
+      - name: Clean setup and the whole suite
+        run: bash setup.sh && bash setup.sh --check && .venv/bin/python -m unittest discover -s tests -v

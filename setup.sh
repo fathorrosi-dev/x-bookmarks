@@ -8,6 +8,20 @@ if [[ -n "$MODE" && "$MODE" != "--upgrade" && "$MODE" != "--check" ]]; then
   printf '%s\n' 'Pemakaian: bash setup.sh [--check | --upgrade]' >&2
   exit 2
 fi
+python_supported() {  # $1 = interpreter; the range comes from release.json so there is one source of truth
+  "$1" - "$BASE/release.json" <<'PY'
+import json, sys
+try:
+    meta = json.load(open(sys.argv[1], encoding='utf-8'))
+    low, high = (tuple(map(int, meta[key].split('.'))) for key in ('python_min', 'python_max'))
+except (OSError, ValueError, KeyError):
+    sys.exit(0)  # no readable manifest: nothing to compare against
+if not low <= sys.version_info[:2] <= high:
+    print('Python %d.%d tidak didukung; gunakan %s sampai %s (python_min dan python_max di release.json).'
+          % (sys.version_info[0], sys.version_info[1], meta['python_min'], meta['python_max']), file=sys.stderr)
+    sys.exit(1)
+PY
+}
 mkdir -p -- "$BASE/.state"
 export PIP_CACHE_DIR="$BASE/.state/pip-cache"
 exec 9>"$BASE/.state/run.lock"
@@ -29,12 +43,14 @@ if [[ ! -x "$VENV/bin/python" ]]; then
     printf '%s\n' 'Belum ada lingkungan Python. Jalankan bash setup.sh.' >&2
     exit 1
   fi
+  python_supported python3 || exit 1
   if ! python3 -m venv --without-pip "$VENV"; then
     printf '%s\n' 'Pembuatan lingkungan Python gagal. Di Ubuntu, pasang dukungan venv:' 'sudo apt install python3-venv' 'Lalu jalankan bash setup.sh lagi.' >&2
     exit 1
   fi
 fi
 PY="$VENV/bin/python"
+python_supported "$PY" || exit 1
 if ! "$PY" -m pip --version >/dev/null 2>&1; then
   if [[ "$MODE" == "--check" ]]; then
     printf '%s\n' 'pip belum tersedia. Jalankan bash setup.sh.' >&2
@@ -55,7 +71,7 @@ elif ! "$PY" - "$BASE/requirements.txt" >/dev/null 2>&1 <<'PY'
 import sys
 from importlib.metadata import version
 import gallery_dl, requests, rich
-for line in open(sys.argv[1]):
+for line in open(sys.argv[1], encoding='utf-8'):
     line = line.strip()
     if line and not line.startswith('#'):
         name, _, wanted = line.partition('==')

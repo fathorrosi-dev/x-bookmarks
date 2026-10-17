@@ -41,6 +41,8 @@ Mulai **3.1.0**, program memiliki self-update rilis stabil. Perintah download/sc
 | Memasang saat alat sedang aktif | `./x-bookmarks update --wait` | Menunggu kunci bebas sebelum pemasangan |
 | Update manual | `bash update.sh /lokasi/tools` dari paket baru | Alternatif dan pemasangan pertama dari versi 3.0.2 |
 | Rollback | `bash rollback.sh` | Memulihkan cadangan program/dependensi terakhir; media tetap tersedia |
+| Versi dan bantuan | `./x-bookmarks --version`, `./x-bookmarks --help`, `./x-bookmarks list --help` | Versi terpasang; `--help` memuat alur lima langkah; setiap aksi punya bantuan dan opsinya sendiri |
+| Membersihkan cadangan lama | `./x-bookmarks clean` | Rencana (dry-run) cadangan program, virtualenv lama, entri arsip yang dilepas, dan pip-cache; `--keep N` (default 3) dan `--yes` untuk menghapus |
 
 ### Self-update dari home
 
@@ -54,7 +56,7 @@ cd "$HOME/tools/x-bookmarks"
 
 `./x-bookmarks check` masih memeriksa sesi X. `./x-bookmarks update --check` hanya memeriksa rilis program: tidak membutuhkan tanggal yang valid, settings, login X, atau profil Firefox. Tambahkan `--plain` untuk teks sederhana; NO_COLOR dihormati. Opsi --check/--wait hanya berlaku pada update.
 
-Updater memakai API GitHub dengan token dan selalu memintanya, walau repo rilis **fathorrosi-dev/x-bookmarks** bersifat publik. Pasang GitHub CLI (`sudo apt install gh`), lalu `gh auth login`. Alternatif otomasi adalah GH_TOKEN, lalu GITHUB_TOKEN, dengan izin Contents: read; token tidak ditulis ke settings atau log. Login GitHub berbeda dari login X/Firefox.
+Updater memakai token GitHub bila ada, dan tidak wajib: repo rilis **fathorrosi-dev/x-bookmarks** bersifat publik, jadi tanpa token rilis tetap terbaca dengan batas 60 permintaan per jam per IP. Token menaikkan batas dan diperlukan jika repo menjadi privat. Pasang GitHub CLI (`sudo apt install gh`), lalu `gh auth login`. Alternatif otomasi adalah GH_TOKEN, lalu GITHUB_TOKEN, dengan izin Contents: read; token tidak ditulis ke settings atau log dan hanya dikirim ke `api.github.com`. Login GitHub berbeda dari login X/Firefox.
 
 Pembaruan hanya berjalan saat dipanggil. Tools mengambil rilis stabil yang dipublikasikan setelah CI lulus, bukan isi branch pengembangan atau prerelease. ZIP dan SHA-256 diverifikasi sebelum ekstraksi; versi, Linux x64, serta Python standar 3.10–3.14 diperiksa. Versi sama/lebih lama dilewati. Checksum memeriksa integritas unduhan, tetapi diambil dari rilis yang sama dengan ZIP, jadi tidak melindungi dari akun GitHub pemilik yang dibobol. Aktifkan autentikasi dua faktor dan batasi siapa yang boleh menulis ke repo. Jika paket suatu saat dibagikan ke orang lain, pertimbangkan attestation artefak GitHub atau tanda tangan terpisah.
 
@@ -125,7 +127,7 @@ bash setup.sh --check
 ./x-bookmarks status
 ```
 
-Untuk pemasangan baru, jalankan `bash setup.sh` terlebih dahulu. Internet diperlukan saat memasang paket; setup menggunakan lingkungan lokal dan tidak memerlukan sudo. gallery-dl dipatok ke **1.32.15**, Rich ke **14.3.4**, sesuai adapter yang diuji.
+Untuk pemasangan baru, jalankan `bash setup.sh` terlebih dahulu. Internet diperlukan saat memasang paket; setup menggunakan lingkungan lokal dan tidak memerlukan sudo. gallery-dl dipatok ke **1.32.15**, Rich ke **14.3.4**, sesuai adapter yang diuji; dependensi yang mereka bawa dipatok di `requirements.txt` yang sama sehingga setiap mesin memasang versi yang sama dengan yang diuji CI. `setup.sh` menolak Python di luar rentang `python_min`–`python_max` di `release.json` (3.10–3.14).
 
 Jika masih memakai salinan di Documents/Codex, ganti lokasi pada langkah pertama. Ikuti [MIGRASI.md](MIGRASI.md) untuk pindah permanen.
 
@@ -177,7 +179,9 @@ Snapshot sebelumnya dipertahankan jika scan gagal atau menghasilkan data parsial
 ./x-bookmarks list --start 2026-08-31 --end 2026-10-06 --limit 10
 ```
 
-Tanpa batas, tampil dua puluh bookmark. CSV lengkap berada di lokasi yang dicetak, dalam `.state/selections/`, dan bisa dibuka di LibreOffice Calc.
+Tanpa batas, tampil dua puluh bookmark. CSV lengkap berada di lokasi yang dicetak, dalam `.state/selections/`, dan bisa dibuka di LibreOffice Calc. Sel CSV yang diawali `=`, `+`, `-`, `@`, tab, atau Enter diberi awalan apostrof agar dibaca sebagai teks, bukan formula; `selection.json` tidak diubah.
+
+Untuk skrip, `list --json`, `status --json`, dan `check --json` mencetak JSON ke stdout (kunci `schema` bernomor 1; huruf non-ASCII ditulis sebagai escape agar sah di locale apa pun). `list --json` tanpa `--limit` memuat semua bookmark terpilih. Contoh: `./x-bookmarks list --json | jq '.bookmarks[].url'`.
 
 ### 5. Coba tiga utas
 
@@ -202,6 +206,8 @@ Tanggal pada nama file adalah tanggal posting UTC. Tanggal bookmark WIB berada d
 File yang sudah tersedia dilewati. Kamu dapat mengulangi perintah yang sama untuk melanjutkan setelah gangguan. Tekan `Ctrl+C` untuk berhenti; ringkasan menampilkan hasil sampai saat itu.
 
 Jika file dihapus, alat menyesuaikan arsip sebelum download berikutnya sehingga file dapat diambil lagi saat utasnya masuk pilihan. Memindahkan file keluar dari lokasi yang dikelola alat juga dianggap sebagai file hilang. Pemindahan lewat `organize` tetap dikenali.
+
+Karena memindahkan seluruh koleksi lebih mungkin daripada menghapusnya, ada pengaman: jika entri yang filenya hilang berjumlah 50 atau lebih **dan** 20% atau lebih dari arsip, `download` berhenti sebelum mengubah apa pun dan menjelaskan jumlahnya. Kembalikan folder `media/` ke lokasi semula, atau jalankan `./x-bookmarks download --reconcile` jika memang ingin mengunduh ulang. Entri yang dilepas selalu dicatat dulu di `.state/archive-removed/archive-removed-<waktu>.txt` (satu entri per baris, mis. `twitter_1000_1`). Untuk memulihkan: `sqlite3 .state/downloaded.sqlite3 "INSERT OR IGNORE INTO archive VALUES ('twitter_1000_1')"` per baris.
 
 ### 7. Pilih cakupan penulis
 
@@ -259,6 +265,7 @@ Panel diperbarui sekitar 12 kali per detik, atau 4 kali per detik lewat SSH. Sel
 | `NO_COLOR=1` | Tanpa warna dan gradasi; panel tetap diperbarui di tempat |
 | `X_BOOKMARKS_STATIC=1` | Tanpa gerakan: spinner diam, bar ukuran-tak-diketahui kosong, tanpa jeda penutup. Angka tetap diperbarui 4 kali per detik |
 | `X_BOOKMARKS_NO_TITLE=1` | Judul terminal tidak diubah |
+| `X_BOOKMARKS_THEME=light` atau `dark` | Memilih palet. Tanpa ini, `COLORFGBG` dibaca (latar 7 atau 15 berarti terang); selain itu gelap. Palet terang memakai warna lebih gelap dengan kontras minimal 4,5:1 terhadap latar putih |
 
 Di terminal tanpa Unicode (`TERM=linux` atau encoding bukan UTF-8) bingkai, simbol, bar, dan garis pemisah memakai karakter ASCII. Titik tengah `·` pada teks tetap karakter Unicode.
 
@@ -276,7 +283,7 @@ Untuk teks sederhana:
 ./x-bookmarks download --start 2026-08-31 --end 2026-10-06 --plain
 ```
 
-Mode plain juga otomatis dipilih saat output dialihkan atau terminal tidak mendukung panel. Output CLI memakai stderr; untuk menyimpan semua tampilan:
+Mode plain juga otomatis dipilih saat output dialihkan atau terminal tidak mendukung panel. Hasil data (tabel `list`/`check`, kartu `status`, dan `--json`) dikirim ke stdout; progres, status, petunjuk langkah berikutnya, dan error ke stderr. Karena itu `./x-bookmarks list --plain > daftar.txt` menyimpan hanya tabelnya, dan `| wc -l` atau `| grep` bekerja. Untuk menyimpan semua tampilan:
 
 ```bash
 ./x-bookmarks status --plain > status.txt 2>&1
@@ -309,7 +316,7 @@ Tweet terhapus, media tidak tersedia, akun terlindungi yang tidak dapat diakses,
 
 Jeda permintaan dan retry tetap dikelola gallery-dl. Saat rate limit, tunggu reset. Jika akun dikunci, selesaikan verifikasi di Firefox sebelum mencoba lagi.
 
-Log terpusat: `.state/download.log` dan `.state/scan.log`. Laporan terakhir tiap rentang berada di `.state/selections/.../last-run-*.json`. Media, snapshot, dan database merupakan data pribadi; jangan mengirim cookie atau profil Firefox.
+Log terpusat: `.state/download.log` dan `.state/scan.log`. Laporan terakhir tiap rentang berada di `.state/selections/.../last-run-*.json`, dan `status` menampilkannya sebagai baris Run terakhir (▲ jika ada utas gagal atau run dihentikan). Kesalahan tak terduga (bug, bukan salah pakai) tampil satu baris dan traceback-nya ditulis ke `.state/crash.log`; lampirkan berkas itu saat melapor. Media, snapshot, dan database merupakan data pribadi; jangan mengirim cookie atau profil Firefox.
 
 Untuk memeriksa dependensi:
 
@@ -317,7 +324,7 @@ Untuk memeriksa dependensi:
 bash setup.sh --check
 ```
 
-`bash setup.sh --upgrade` memperbarui dependensi sesuai `requirements.txt`, bukan memperbarui kode program. gallery-dl dan Rich tetap dipatok; dependensi lain yang tidak dipatok dapat diperbarui sesuai batas paket. Jika X berubah, adapter dan pin versi perlu diperbarui serta diuji bersama dalam rilis program baru. Langkah menaikkan gallery-dl atau Rich ada di bagian Pengembang pada README; `requirements.txt` adalah satu-satunya sumber versi yang dibaca `setup.sh` dan adapter.
+`bash setup.sh --upgrade` memperbarui dependensi sesuai `requirements.txt`, bukan memperbarui kode program. gallery-dl dan Rich tetap dipatok, begitu pula dependensi yang mereka bawa, di berkas yang sama. Jika X berubah, adapter dan pin versi perlu diperbarui serta diuji bersama dalam rilis program baru. Langkah menaikkan gallery-dl atau Rich ada di bagian Pengembang pada README; `requirements.txt` adalah satu-satunya sumber versi yang dibaca `setup.sh` dan adapter.
 
 Tes lokal tanpa mengakses X:
 
@@ -325,6 +332,6 @@ Tes lokal tanpa mengakses X:
 .venv/bin/python -m unittest discover -s tests -v
 ```
 
-Simpan `.state`, `media`, dan `.bootstrap` saat memindahkan alat. Jangan menjalankan beberapa proses sekaligus; setup, download, organize, update, rollback, dan migrasi memakai kunci yang sama.
+Simpan `.state`, `media`, dan `.bootstrap` saat memindahkan alat. Jangan menjalankan beberapa proses sekaligus; setup, scan, select, check, download, organize, clean, update, rollback, dan migrasi memakai kunci yang sama. `status` dan `list` hanya membaca, jadi tidak memakai kunci dan bisa dijalankan saat download berjalan di terminal lain.
 
 Referensi: [pengaturan foto](https://gdl-org.github.io/docs/configuration.html#extractor-twitter-size), [kode extractor X](https://github.com/mikf/gallery-dl/blob/v1.32.15/gallery_dl/extractor/twitter.py), [Rich Live](https://rich.readthedocs.io/en/stable/live.html).

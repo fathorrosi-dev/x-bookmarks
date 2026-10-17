@@ -17,8 +17,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python: ['3.10', '3.13', '3.14']
+        python: ['3.10', '3.11', '3.12', '3.13', '3.14']  # the whole range release.json declares
     env:
+      # Every leg runs in UTF-8 mode; the non-UTF-8 case is covered on purpose by test_text_files_are_utf8_whatever_the_locale.
       PYTHONUTF8: '1'
       PYTHONDONTWRITEBYTECODE: '1'
     steps:
@@ -26,6 +27,13 @@ jobs:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         with:
           python-version: ${{ matrix.python }}
+      - name: Lint
+        if: matrix.python == '3.13'
+        run: |
+          python -m pip install --quiet ruff==0.17.0
+          ruff check .
+          ruff format --check self_update.py release_tools.py release_bundle.py
+          shellcheck --severity=warning -e SC1007 setup.sh migrate.sh update.sh rollback.sh x-bookmarks
       - name: Clean setup and verification
         run: bash setup.sh && bash setup.sh --check
       - name: Local HTTP, gallery-dl and release lifecycle tests

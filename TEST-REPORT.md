@@ -1,5 +1,13 @@
 # Verifikasi X Bookmarks
 
+## Perubahan setelah tinjauan repositori (belum dirilis)
+
+Menerapkan 19 rekomendasi tinjauan: AUD-001 sampai AUD-008, UX-001 sampai UX-005, FEAT-001 sampai FEAT-004, DX-001, DX-002. VERSION belum dinaikkan; menaikkannya adalah keputusan rilis.
+
+Pengujian lokal: **89 tes lulus** (57 di `test_tools.py`, 32 di `test_release.py`) dengan Python 3.12.3, gallery-dl 1.32.15, Rich 14.3.4, `TERM=linux`, tanpa mengakses X. Sebelum perubahan, 57 tes yang ada lulus kecuali dua tes UI yang bergantung pada `TERM` host; keduanya kini memasang `TERM` sendiri. Tes baru mencakup: orkestrasi `download()`, `extract()` dan `resolve_browser()` dengan job fixture lokal; locale ASCII tanpa mode UTF-8; lock baca-saja; pengaman reconcile massal beserta cadangan entri; sel CSV mirip formula; kontrak stdout/stderr; tema terang dan kontrasnya; subcommand, `--version`, hint langkah berikut; skema `--json`; baris Run terakhir; handler error tak terduga; `clean`; token opsional; rentang Python di `setup.sh`; kelengkapan pin dependensi transitif; aturan nama berkas yang diterima updater rilis sebelumnya; judul dokumen. Logika utama tiap perubahan perilaku diperiksa dengan mutation check manual: logikanya dirusak sengaja dan test harus gagal.
+
+Lint: `ruff check .`, `ruff format --check` untuk tiga modul rilis, dan `shellcheck` bersih. Resolusi pin di `requirements.txt` diperiksa untuk Python 3.10, 3.11, 3.12, 3.13, 3.14 dengan `pip download --python-version`; hanya 3.12 yang dijalankan. Bundle rilis yang dibangun dari pohon ini juga diuji terhadap `safe_unpack` milik updater 3.1.1 asli: diterima, sedangkan versi awal yang memuat berkas baru `constraints.txt` ditolak, sehingga pin dipindah ke `requirements.txt`. Hasil CI dan pemeriksaan perangkat belum dicatat; tambahkan setelah workflow tag selesai.
+
 ## Perubahan pada 3.1.1
 
 Tes baru mencakup: panel dan lebar bar sama pada 40/60/100/160 kolom, simbol satu sel dan cadangan ASCII, gerak comet tanpa lompatan, berhenti saat tidak ada data, hitung mundur penantian, riwayat kecepatan, struk per utas, mode tanpa gerak dan tanpa judul terminal, pesan settings.json yang hilang atau rusak, satu sumber versi dependensi, dan kecocokan daftar ekstensi `gallery-dl.json` dengan `media_layout.py`. Tes rilis tidak lagi menulis versi program secara langsung.

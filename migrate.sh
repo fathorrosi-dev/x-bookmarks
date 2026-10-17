@@ -38,11 +38,11 @@ source,dest=map(Path,sys.argv[1:])
 for name in ('last-update.json','update-transaction.json'):
     record=dest/'.state'/name
     if record.exists():
-        info=json.loads(record.read_text())
+        info=json.loads(record.read_text(encoding='utf-8'))
         backup=Path(info['backup'])
         if backup.is_relative_to(source):
             info['backup']=str(dest/backup.relative_to(source))
-            record.write_text(json.dumps(info,indent=2)+'\n')
+            record.write_text(json.dumps(info,indent=2)+'\n',encoding='utf-8')
 PY
 bash "$DEST/setup.sh"
 "$DEST/x-bookmarks" status

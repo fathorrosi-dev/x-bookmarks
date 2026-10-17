@@ -9,6 +9,7 @@
   "files": [
     ".bootstrap/SHA256SUMS",
     ".bootstrap/pip-26.2.1-py3-none-any.whl",
+    ".github/workflows/canary.yml",
     ".github/workflows/release.yml",
     ".gitignore",
     "INSTALL-STATUS.md",

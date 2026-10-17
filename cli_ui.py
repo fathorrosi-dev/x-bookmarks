@@ -4,6 +4,10 @@ Motion is tied to real activity: the comet bar and the status spinner stop when 
 worker waits, retries, fails or stops sending data. Plain, redirected, TERM=dumb and
 NO_COLOR runs never receive animation or colour; X_BOOKMARKS_STATIC=1 turns motion off
 in a normal terminal and X_BOOKMARKS_NO_TITLE=1 stops the terminal title updates.
+X_BOOKMARKS_THEME=light|dark picks the palette (otherwise COLORFGBG decides, dark by default).
+
+Output contract: results (tables, the status card) go to stdout; progress, status lines, hints and errors go to
+stderr. Redirect stdout to keep results only, or `> file 2>&1` to keep everything.
 """
 from collections import deque
 from contextlib import contextmanager
@@ -25,13 +29,29 @@ from rich.text import Text
 
 from media_layout import media_kind
 
-PINK = '#FFC2D4'
-RED = '#E8384F'
-BLUE = '#A8D8F0'
-DIM = '#94A3B8'
-EMPTY = '#334155'
-MINT = '#8EE3B0'
-AMBER = '#FFD27A'
+# Semantic roles: PINK activity, FILE the active file bar, RED failure only, BLUE info, MINT success, AMBER wait or
+# warning, DIM secondary text, EMPTY the bar track. In the dark palette FILE equals RED (the original look); the light
+# palette keeps failures the only red thing on screen.
+PALETTES = {
+    'dark': dict(pink='#FFC2D4', red='#E8384F', file='#E8384F', blue='#A8D8F0', dim='#94A3B8', empty='#334155',
+                 mint='#8EE3B0', amber='#FFD27A'),
+    'light': dict(pink='#B4325E', red='#C4243C', file='#0E7490', blue='#1F6FA3', dim='#586678', empty='#CBD5E1',
+                  mint='#1E7F55', amber='#8A5600'),
+}
+
+
+def detect_theme(env):
+    """X_BOOKMARKS_THEME wins; otherwise COLORFGBG ('fg;bg' or 'fg;default;bg') with a light background; else dark."""
+    chosen = env.get('X_BOOKMARKS_THEME', '').strip().lower()
+    if chosen in PALETTES:
+        return chosen
+    background = env.get('COLORFGBG', '').rsplit(';', 1)[-1]
+    return 'light' if background in ('7', '15') else 'dark'
+
+
+THEME = detect_theme(os.environ)
+PINK, RED, FILE, BLUE, DIM, EMPTY, MINT, AMBER = (
+    PALETTES[THEME][name] for name in ('pink', 'red', 'file', 'blue', 'dim', 'empty', 'mint', 'amber'))
 
 # One cell wide in every terminal font checked so far; emoji and U+FE0F forms are avoided.
 GLYPHS = {
@@ -204,9 +224,8 @@ class UI:
     def __init__(self, plain=False):
         self.interactive = (not plain and sys.stdout.isatty()
                             and sys.stderr.isatty() and os.environ.get('TERM') != 'dumb')
-        self.console = Console(stderr=True, force_terminal=self.interactive,
-                               color_system='truecolor' if self.interactive else None,
-                               no_color='NO_COLOR' in os.environ, highlight=False)
+        self.console = self.make_console(stderr=True)       # progress, status, errors
+        self.data_console = self.make_console(stderr=False)  # results: tables and the status card
         self.static = os.environ.get('X_BOOKMARKS_STATIC', '') not in ('', '0')
         self.title_enabled = os.environ.get('X_BOOKMARKS_NO_TITLE', '') in ('', '0')
         self.live = None
@@ -218,6 +237,11 @@ class UI:
         self.wait_total = None
         self.wait_message = ''
         self.last_plain_status = None
+
+    def make_console(self, stderr):
+        return Console(stderr=stderr, force_terminal=self.interactive,
+                       color_system='truecolor' if self.interactive else None,
+                       no_color='NO_COLOR' in os.environ, highlight=False)
 
     # ----- terminal capabilities, decided from the console that actually prints -----
     @property
@@ -294,18 +318,26 @@ class UI:
         self.range = range_label(settings['start'], settings['end'], settings['timezone'], self.g['arrow'])
         self.say(f"{self.g['head']} X Bookmarks · {self.range} · tanggal bookmark", BLUE)
 
+    def out(self, value):
+        """A line of result data on stdout, so it survives `> file` and pipes."""
+        sys.stdout.write(str(value) + '\n')
+        sys.stdout.flush()
+
+    def hint(self, command):
+        self.say(f"{self.g['run']} Berikutnya: {command}" if self.interactive else f'Berikutnya: {command}', BLUE)
+
     def table(self, headings, rows):
         if not self.interactive:
-            self.say(' | '.join(headings))
+            self.out(' | '.join(headings))
             for row in rows:
-                self.say(' | '.join(map(str, row)))
+                self.out(' | '.join(map(str, row)))
             return
         table = Table(box=None, padding=(0, 1), show_edge=False)
         for name in headings:
             table.add_column(name, header_style=BLUE, overflow='fold')
         for row in rows:
             table.add_row(*(Text(str(value)) for value in row))
-        self.console.print(table)
+        self.data_console.print(table)
 
     def checklist(self, title, rows):
         """rows: (state, label, value) with state 'ok', 'warn' or 'info'. Plain output is the old table."""
@@ -322,7 +354,7 @@ class UI:
             glyph, color = marks[state]
             text = short_path(value) if isinstance(value, Path) else str(value)
             grid.add_row(Text(glyph, style=color), label, Text(text))
-        self.console.print(self.panel(grid, Text.assemble((f'{g["head"]} ', BLUE), (title, f'bold {BLUE}'))))
+        self.data_console.print(self.panel(grid, Text.assemble((f'{g["head"]} ', BLUE), (title, f'bold {BLUE}'))))
 
     # ----- status shown in the last row of every live display -----
     def status(self, message, level='busy'):
@@ -618,9 +650,9 @@ class DownloadSession:
         overall = self.bar_row(g['run'], PINK, 'Utas',
                                ui.bar(done.completed, done.total, PINK, gradient=(PINK, BLUE)),
                                overall_tail, width)
-        current = self.bar_row(g['file'], RED, 'File',
-                               ui.bar(task.completed, task.total, RED, self.animation,
-                                      task.fields.get('indicator', False), gradient=(RED, PINK)),
+        current = self.bar_row(g['file'], FILE, 'File',
+                               ui.bar(task.completed, task.total, FILE, self.animation,
+                                      task.fields.get('indicator', False), gradient=(FILE, PINK)),
                                tail, width)
         if self.filename:
             detail = Text.assemble((f'  {g["media"]} ', BLUE), f'{KINDS[media_kind(self.filename)]}  ',

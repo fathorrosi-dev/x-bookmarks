@@ -1,8 +1,6 @@
 """Native jobs with local fixture media; never contacts X or reads cookies."""
-import re
 import sys
 from datetime import datetime
-from pathlib import Path
 
 sys.path.insert(0, sys.argv.pop(1))
 from gallery_dl import extractor

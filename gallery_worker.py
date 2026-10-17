@@ -25,7 +25,7 @@ class Events:
 
 def pinned_version(name):
     """requirements.txt is the only place that states a dependency pin."""
-    for line in (Path(__file__).resolve().parent / 'requirements.txt').read_text().splitlines():
+    for line in (Path(__file__).resolve().parent / 'requirements.txt').read_text(encoding='utf-8').splitlines():
         key, _, value = line.strip().partition('==')
         if key == name and value:
             return value

@@ -1,2 +1,15 @@
 gallery-dl==1.32.15
 rich==14.3.4
+# Dependencies of the two pins above, pinned so every machine installs what CI tested.
+# Only the two lines above are chosen by hand. After changing them, refresh everything below from `pip freeze` of a clean
+# environment (all lines except gallery-dl, rich and pip); tests/test_tools.py checks the list is complete and current.
+# They live in this file, not in a constraints file, because the updater of an installed release only accepts known
+# file names (tests/test_release.py keeps that rule).
+certifi==2026.7.22
+charset-normalizer==3.5.2
+idna==3.20
+markdown-it-py==4.2.0
+mdurl==0.1.2
+Pygments==2.21.0
+requests==2.34.2
+urllib3==2.8.0
